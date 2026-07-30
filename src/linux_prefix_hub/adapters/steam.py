@@ -38,6 +38,16 @@ from .base import HookResult, user_dir_for  # noqa: F401  (re-export)
 
 SOURCE = "steam"
 
+# Steam Play tools (Proton, the Linux runtimes) ship a toolmanifest.vdf in
+# their install dir. Verified against a real 21-manifest library: the marker
+# catches every Proton/runtime entry and no actual game. No field inside
+# appmanifest_*.acf distinguishes them -- the key sets are identical.
+TOOL_MANIFEST = "toolmanifest.vdf"
+
+# Depot-only helper apps that carry no toolmanifest. Valve installs these
+# into libraries alongside games, but they are not playable.
+NON_GAME_APPIDS = {"228980"}  # Steamworks Common Redistributables
+
 # Common Steam roots (native + Flatpak). realpath de-duplicates symlinks.
 STEAM_ROOT_CANDIDATES = [
     "~/.steam/steam",
@@ -97,8 +107,22 @@ def find_library_dirs() -> list[Path]:
     return libs
 
 
+def is_tool(appid: str, game_dir: Path | None) -> bool:
+    """Is this a Steam Play tool/runtime rather than a game?"""
+    if appid in NON_GAME_APPIDS:
+        return True
+    return bool(game_dir and (game_dir / TOOL_MANIFEST).exists())
+
+
 def iter_games() -> Iterator[dict[str, Any]]:
-    """Yield one dict per game found (across all libraries)."""
+    """Yield one dict per game found (across all libraries).
+
+    Tools and runtimes are skipped, and an appid is yielded once even when
+    several libraries carry a manifest for it -- a shared library folder on a
+    second disk really does produce duplicate manifests.
+    """
+    found: dict[str, dict[str, Any]] = {}
+
     for steamapps in find_library_dirs():
         for acf in steamapps.glob("appmanifest_*.acf"):
             try:
@@ -118,9 +142,11 @@ def iter_games() -> Iterator[dict[str, Any]]:
             installdir = state.get("installdir", "")
             game_dir = (steamapps / "common" / installdir
                         if installdir else None)
+            if is_tool(appid, game_dir):
+                continue
             prefix = _prefix_for(steamapps, appid)
 
-            yield {
+            entry = {
                 "source": SOURCE,
                 "app_id": appid,
                 "game_name": state.get("name", f"App {appid}"),
@@ -132,6 +158,15 @@ def iter_games() -> Iterator[dict[str, Any]]:
                 "user_dir": user_dir_for(prefix),
                 "managed": is_connected(appid),
             }
+            previous = found.get(appid)
+            # Keep the copy that is actually installed, and prefer one that
+            # already has a prefix -- that is the library being played from.
+            if previous is None or (
+                    (entry["installed"], bool(prefix))
+                    > (previous["installed"], bool(previous["prefix_path"]))):
+                found[appid] = entry
+
+    yield from found.values()
 
 
 # Kept for older call sites / scripts.

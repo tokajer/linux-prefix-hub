@@ -28,20 +28,32 @@ Legend: ✅ done · 🔨 next · 🔭 later
 
 ---
 
-## 🔨 Graphical interface (GTK4 / libadwaita)
+## ✅ Graphical interface (GTK4 / libadwaita)
 
-Sits on the existing logic — the split between logic and presentation in
-`gui/welcome.py` exists for exactly this.
+`gui/app.py` + `gui/tasks.py`, sitting on the existing logic exactly as the
+split in `gui/welcome.py` intended.
 
-- Game list ("Cyberpunk 2077 · saves: ~/Games/… · [Connect]").
-- **No** Wine/prefix vocabulary in the UI.
-- Welcome dialog: replace `choose_install_dir` with a folder chooser, reuse
-  `run` as the controller.
-- "Connect" button per game, calling the same `adapter.connect()` the CLI uses;
-  show `HookResult.manual` (Steam running) as a copy-paste card.
-- "Move saves home" switch per storage location → `core.redirect`.
-- PyGObject as a dependency; either bundle it in the AppImage or use system
-  GTK. Bundling GTK is the bigger part of this task — budget for it.
+- Game list, a connect switch per game, a "keep saves in your home folder"
+  switch per save location.
+- `HookResult.manual` (Steam running) becomes a dialog with a copy button.
+- **The GTK-bundling question resolved itself.** We bundle nothing: the
+  AppImage's `--gui` hands over to a *system* interpreter that has PyGObject
+  (`__main__._reexec_gui`), because our package is pure Python. That keeps the
+  AppImage at 17 MB instead of shipping a second GTK stack.
+
+Still open on the GUI:
+
+- Folder chooser in the first-run dialog (it currently confirms and uses the
+  default location; `choose_install_dir` is still terminal-only).
+- A language switcher — `--set-language` exists, the window has no control yet.
+- The move-home switch always uses the default `~/Games/<Game>/` target; no way
+  to pick a different one from the window.
+
+## ✅ Velopack updater
+
+`core/updater.py` talks to the Velopack SDK, `packaging/build-velopack.sh`
+builds the release. The old zsync/GitHub-API path is gone. **Not yet run end to
+end** — see the VERIFY-ON-DEVICE note in the README.
 
 ## 🔭 Install-experience layer
 

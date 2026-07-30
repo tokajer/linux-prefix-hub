@@ -7,8 +7,9 @@ to guess where it is.
 Discovery is two-layered on purpose:
   1. `pga.db` (SQLite, stdlib) gives the real game names, runners and the
      config file name. This is the authoritative list.
-  2. `<config>/games/<configpath>.yml` gives `game.prefix` -- the actual
-     prefix path.
+  2. `games/<configpath>.yml` gives `game.prefix` -- the actual prefix path.
+     That folder lives under the *data* root on current Lutris and under the
+     *config* root on older ones, so both are searched (see `games_dirs`).
 If pga.db is missing or its schema changed, we fall back to scanning the YAML
 files directly, so discovery degrades instead of dying.
 
@@ -23,6 +24,8 @@ VERIFY-ON-DEVICE:
     around between releases); without it the "before" snapshot may race.
   - Flatpak Lutris uses a different config root -- both are handled below,
     check which one your installation actually uses.
+  - Verified against Lutris 0.5.23, which keeps everything under the data
+    root. Re-check `games_dirs` if a future release moves the YAMLs again.
 """
 from __future__ import annotations
 
@@ -56,23 +59,39 @@ def _expand(p: str) -> Path:
 
 
 def config_roots() -> list[tuple[Path, Path]]:
-    """Existing (config, data) root pairs."""
+    """Existing (config, data) root pairs.
+
+    Either half is enough. Lutris moved the per-game YAMLs from the config
+    root into the data root (0.5.23 keeps pga.db, lutris.conf *and*
+    games/*.yml there and may never create ~/.config/lutris at all), so
+    gating on the config root alone finds no games on a current install.
+    """
     out = []
     for cfg, data in LUTRIS_ROOTS:
         c, d = _expand(cfg), _expand(data)
-        if c.is_dir():
+        if c.is_dir() or d.is_dir():
             out.append((c, d))
     return out
 
 
+def games_dirs() -> list[Path]:
+    """Every directory that may hold per-game YAMLs -- new layout first."""
+    dirs: list[Path] = []
+    for cfg_root, data_root in config_roots():
+        for d in (data_root / "games", cfg_root / "games"):
+            if d.is_dir() and d not in dirs:
+                dirs.append(d)
+    return dirs
+
+
 def config_file_for(app_id: str) -> Path | None:
     """The game's YAML config (app_id is the Lutris slug/configpath)."""
-    for cfg_root, _data in config_roots():
-        direct = cfg_root / "games" / f"{app_id}.yml"
+    for games in games_dirs():
+        direct = games / f"{app_id}.yml"
         if direct.is_file():
             return direct
         # configpath usually is "<slug>-<timestamp>"
-        matches = sorted((cfg_root / "games").glob(f"{app_id}-*.yml"))
+        matches = sorted(games.glob(f"{app_id}-*.yml"))
         if matches:
             return matches[0]
     return None
@@ -134,20 +153,51 @@ def _is_hooked(cfg: dict[str, Any]) -> bool:
     return str(paths.HOOK_SHIM) in str(system.get(PRE_KEY, ""))
 
 
+def _config_path(configpath: str | None) -> Path | None:
+    """Locate `<configpath>.yml` in whichever layout this Lutris uses."""
+    if not configpath:
+        return None
+    for games in games_dirs():
+        candidate = games / f"{configpath}.yml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _is_steam_mirror(app_id: str, runner: Any, prefix: str | None) -> bool:
+    """A Steam library entry Lutris only mirrors into its own list.
+
+    Lutris imports the user's Steam library (`runner: steam`, config file
+    `steam-<appid>-<timestamp>.yml`). Those entries have no prefix of their
+    own -- the Steam adapter lists the same games with the real one -- so
+    yielding them here would just offer a second, useless connect. Anything
+    that does have a prefix stays, whatever its runner says.
+    """
+    if prefix:
+        return False
+    return runner == "steam" or app_id.startswith("steam-")
+
+
 def iter_games() -> Iterator[dict[str, Any]]:
     seen: set[str] = set()
-    for cfg_root, data_root in config_roots():
-        rows = _games_from_pga(data_root)
-        for row in rows:
+    # By file, not by slug: Lutris does not require the config file to be
+    # named after the slug ("diablo-iv" lives in
+    # "diablo-iv-battlenet-<ts>.yml"), so the fallback below would otherwise
+    # yield the same game a second time under a name derived from the file.
+    used: set[Path] = set()
+    for _cfg_root, data_root in config_roots():
+        for row in _games_from_pga(data_root):
             app_id = row.get("slug") or row.get("configpath")
             if not app_id or app_id in seen:
                 continue
-            seen.add(app_id)
-            cfg_path = (cfg_root / "games" / f"{row.get('configpath')}.yml"
-                        if row.get("configpath") else None)
-            has_cfg = bool(cfg_path and cfg_path.is_file())
-            cfg = _read_yaml(cfg_path) if has_cfg else {}
+            seen.add(str(app_id))
+            cfg_path = _config_path(row.get("configpath"))
+            if cfg_path:
+                used.add(cfg_path)
+            cfg = _read_yaml(cfg_path) if cfg_path else {}
             prefix = _prefix_from_config(cfg)
+            if _is_steam_mirror(str(app_id), row.get("runner"), prefix):
+                continue
             yield {
                 "source": SOURCE,
                 "app_id": str(app_id),
@@ -161,15 +211,18 @@ def iter_games() -> Iterator[dict[str, Any]]:
                 "managed": _is_hooked(cfg),
             }
 
-        # Fallback / extra: YAML files without a pga.db row.
-        for yml in sorted((cfg_root / "games").glob("*.yml")):
+    # Fallback / extra: YAML files without a pga.db row.
+    for games in games_dirs():
+        for yml in sorted(games.glob("*.yml")):
             app_id = yml.stem
             slug = _slug_from_configpath(app_id)
-            if slug in seen or app_id in seen:
+            if yml in used or slug in seen or app_id in seen:
                 continue
             seen.add(slug)
             cfg = _read_yaml(yml)
             prefix = _prefix_from_config(cfg)
+            if _is_steam_mirror(slug, cfg.get("runner"), prefix):
+                continue
             yield {
                 "source": SOURCE,
                 "app_id": slug,

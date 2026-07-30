@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Build the AppImage. Works locally and on GitHub Actions.
+# Build a local, dotnet-free AppImage. NOT the release pipeline.
+#
+# Releases are built by `build-velopack.sh`, because Velopack owns both the
+# packaging and the update feed. This script exists for one case: getting a
+# testable AppImage on a machine without a working .NET SDK.
+#
+# Consequence, on purpose: it does NOT ship the `velopack` wheel, so the
+# resulting build cannot self-update. `--update` says so honestly instead of
+# half-working, and Velopack's native layer stays quiet (it logs straight to
+# stderr when it finds no package around it).
 #
 # What it does:
 #   1. fetch a relocatable CPython AppImage (python-appimage) as the base
 #   2. unpack it, drop our package into its site-packages
 #   3. replace AppRun / desktop file / icon with ours
-#   4. repack with appimagetool, embedding zsync update information
-#
-# The embedded update information is what makes both GearLever and
-# AppImageUpdate able to update the app on their own -- and our own
-# `--update` uses the same GitHub release.
+#   4. repack with appimagetool
 #
 # Requirements: curl, and either FUSE or (as used here) the extract-and-run
 # fallback that needs nothing at all.
@@ -143,4 +148,5 @@ fi
 say "Done"
 ls -lh "${BUILD}/${APP}-${VERSION}-${ARCH}.AppImage"*
 echo
-echo "Upload the .AppImage, the .zsync and SHA256SUMS to the GitHub release."
+echo "Local test build -- it cannot self-update. Use build-velopack.sh for"
+echo "anything you intend to publish."

@@ -1,6 +1,8 @@
 # Releasing
 
-One tag, everything else is automatic.
+One tag, everything else is automatic. Releases are built and updated by
+**Velopack** — it owns the packaging *and* the update feed, so the two can
+never drift apart.
 
 ```bash
 # 1. bump the version in both places (they are checked against the tag)
@@ -16,59 +18,69 @@ git push origin main v0.3.0
 `.github/workflows/release.yml` then:
 
 1. checks the tag matches `__version__` (and fails loudly if not),
-2. installs `zsync` + `desktop-file-utils`,
-3. runs `packaging/build-appimage.sh`,
+2. installs the .NET SDK and the `vpk` tool,
+3. runs `packaging/build-velopack.sh`,
 4. smoke-tests the AppImage (`--version`, `--scan`) in a throwaway HOME,
-5. publishes `LinuxPrefixHub-<version>-x86_64.AppImage`, the matching
-   `.zsync` and `SHA256SUMS` to the GitHub release.
+5. publishes **everything** in `build/release/` to the GitHub release.
+
+Step 5 matters: the directory *is* the update feed. Uploading only the
+`.AppImage` leaves `--update` unable to find anything.
 
 You can also trigger it by hand ("Run workflow" → version) — useful for
 re-cutting a release without moving the tag.
 
-## How updating works for users
+## Build requirements
 
-Three independent routes, all pointing at the same GitHub release:
+`vpk` is a .NET tool, so a release build needs the .NET SDK:
+
+```bash
+sudo dnf install dotnet-sdk-10.0     # Fedora/Nobara
+dotnet tool install -g vpk
+```
+
+Keep the `vpk` version and the `velopack` wheel version (pyproject, `update`
+extra) aligned — Velopack asks for that explicitly, and a mismatch shows up as
+a feed the client cannot read.
+
+Without a .NET SDK you can still get a **local test build**:
+
+```bash
+./packaging/build-appimage.sh
+```
+
+That one deliberately ships no `velopack` wheel, so it cannot self-update.
+Never publish it.
+
+## How updating works for users
 
 | Route | Trigger | Mechanism |
 |---|---|---|
-| GearLever | its own UI | reads the embedded zsync update information |
-| AppImageUpdate / `appimageupdatetool` | user runs it | same embedded information, delta download |
-| Built in | `--update`, or the daily check in the watcher | GitHub API → download → SHA-256 check → atomic replace |
+| GearLever | its own UI | it manages the file, we stay out of the way |
+| Built in | `--update`, or the daily check in the watcher | Velopack: `check_for_updates` → `download_updates` → `apply_updates_and_restart` |
 
-`core/updater.py` prefers them in that order: if GearLever manages the
-AppImage we do nothing (it would fight over placement), if
-`appimageupdatetool` exists we let it do a delta update, otherwise we download
-the asset ourselves and verify it against `SHA256SUMS` before replacing the
-installed binary.
+`core/updater.py` still checks GearLever first: if GearLever manages the
+AppImage we do nothing, because two updaters fighting over one file is worse
+than a slightly stale app.
+
+`updater.app_hook()` runs once at startup (from `__main__.main`, deliberately
+*after* the `--wrapper`/`--hook`/`--daemon` fast paths so a game launch never
+pays for it). Velopack uses it to finish a pending update. It is skipped
+entirely outside the AppImage: the native layer logs a `NotInstalled`
+complaint straight to stderr that no Python `except` can swallow.
 
 The daily check is cached in `config.json` (`update_check`) and the watcher
 notifies at most once per version.
 
-## What makes the update information work
-
-`packaging/build-appimage.sh` passes
-
-```
-gh-releases-zsync|tokajer|linux-prefix-hub|latest|LinuxPrefixHub-*-x86_64.AppImage.zsync
-```
-
-to appimagetool. The `latest` keyword means every future release is found
-without rebuilding the pointer — so the glob in the file name must keep
-matching. **If you rename the AppImage, update that pattern too**, otherwise
-existing installations stop finding updates.
-
 ## Forks
 
-No rebuild needed to point the built-in updater somewhere else — set it in
-`~/.config/linux-prefix-hub/config.json`:
+Point the updater somewhere else in `~/.config/linux-prefix-hub/config.json`:
 
 ```json
 { "github_owner": "you", "github_repo": "your-fork" }
 ```
 
-The embedded zsync information is baked in at build time, so for GearLever and
-AppImageUpdate a fork does need its own build (change `GH_OWNER`/`GH_REPO`,
-which the script reads from the environment).
+or override the whole feed with `"update_url"`. No rebuild needed — unlike the
+old zsync setup, nothing about the feed is baked into the binary.
 
 ## Checklist before tagging
 

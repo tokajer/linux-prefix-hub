@@ -11,6 +11,8 @@ Two shapes, same job:
 The wrapper is **read-only towards the game**: it observes, it does not change
 how the game runs. The only write it performs is re-applying redirections the
 user already asked for (self-heal), and that happens before the game starts.
+Being invisible includes the environment: see `game_env`, which hands the game
+back exactly the environment it would have had without us in the chain.
 
 Failure policy: whatever goes wrong in our code, the game still launches and
 its exit code is passed through. A save-game tracker that stops people from
@@ -19,12 +21,54 @@ playing has failed at its actual job.
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 from typing import Any
 
 from ..adapters import base
 from . import db, redirect, snapshot
+
+# --- The environment the game gets --------------------------------------
+# The AppImage sets up its own bundled CPython -- for *us*. None of that may
+# reach the game. Proton is itself a Python program, started by a different
+# interpreter inside the Steam runtime container, so a PYTHONHOME pointing at
+# our 3.12 stdlib (under a /tmp mount point the container cannot even see)
+# kills the launch before the game ever starts. Same trap `_handover_env` in
+# `__main__` documents, one process further down -- and here it is worse,
+# because here it looks like "the game is broken since I connected it".
+BUNDLE_VARS = ("APPDIR", "APPIMAGE", "ARGV0", "OWD",
+               "APPIMAGE_EXTRACT_AND_RUN", "PYTHONHOME",
+               "PYTHONDONTWRITEBYTECODE")
+
+# Colon-lists AppRun prepends the bundle to. The user's own entries stay.
+BUNDLE_LISTS = ("PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "XDG_DATA_DIRS")
+
+
+def game_env() -> dict[str, str] | None:
+    """The environment the game would have had if we were not in the chain.
+
+    Only what the AppImage added is undone; everything the launcher set
+    (SteamAppId, WINEPREFIX, ...) is passed through untouched. Returns None
+    when we are not running from an AppImage -- then there is nothing to undo
+    and the game simply inherits our environment.
+    """
+    appdir = os.environ.get("APPDIR")
+    if not appdir:
+        return None
+    env = dict(os.environ)
+    for var in BUNDLE_VARS:
+        env.pop(var, None)
+    for var in BUNDLE_LISTS:
+        if var not in env:
+            continue
+        rest = [p for p in env[var].split(os.pathsep)
+                if p and not p.startswith(appdir)]
+        if rest:
+            env[var] = os.pathsep.join(rest)
+        else:
+            del env[var]
+    return env
 
 
 def _entry_from_context(ctx: dict[str, Any],
@@ -79,7 +123,7 @@ def main(argv: list[str]) -> int:
         print(f"wrapper: skipping detection ({exc})", file=sys.stderr)
         ctx = None
 
-    proc = subprocess.run(argv)
+    proc = subprocess.run(argv, env=game_env())
 
     try:
         if _usable(ctx):

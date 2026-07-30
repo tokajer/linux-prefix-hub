@@ -27,8 +27,10 @@ fi
 [ -x "${PYTHON}" ] || PYTHON="$(command -v python3)"
 
 # Second home for the app code, used when it is not installed into the
-# bundled interpreter's site-packages.
-export PYTHONPATH="${HERE}/usr/lib/python:${PYTHONPATH:-}"
+# bundled interpreter's site-packages. Appending an unset PYTHONPATH would
+# leave a trailing colon -- an empty entry means "the current directory", and
+# for --wrapper that directory belongs to the game.
+export PYTHONPATH="${HERE}/usr/lib/python${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONDONTWRITEBYTECODE=1
 
 # Pass the shim modes straight through: these run on every game launch and

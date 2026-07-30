@@ -31,8 +31,11 @@ linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/Cyberpunk 2077/
   next launch.
 - **Noticing new games** via a small background service, and telling you when
   a new version of this app is out.
-- **Self-contained AppImage** that installs itself, and updates itself from
-  GitHub releases (or lets GearLever do it).
+- **A window** (GTK 4 / libadwaita): your games as a list, one switch to
+  connect a game, one per save location to move it home. Everything the CLI
+  does, without the CLI.
+- **Self-contained AppImage** that installs itself, and updates itself via
+  [Velopack](https://velopack.io) (or lets GearLever do it).
 
 ## Install
 
@@ -110,22 +113,27 @@ linux-prefix-hub --check-update
 linux-prefix-hub --update
 ```
 
-The AppImage carries zsync update information, so **GearLever** and
-**AppImageUpdate** can update it too — whichever you prefer is fine, we detect
-GearLever and stay out of its way. Downloads are verified against the
-release's `SHA256SUMS`.
+Updates run through **Velopack**, which downloads, verifies and swaps the
+AppImage, then restarts into the new version. If **GearLever** manages the
+AppImage we detect that and stay out of its way — two updaters fighting over
+one file is worse than a slightly stale app.
+
+Only the AppImage can update itself. A `pip`/`pipx` install belongs to pip, and
+the local test build (`packaging/build-appimage.sh`) ships no updater at all.
 
 ## All modes
 
 ```
-linux-prefix-hub                 setup on first run, overview afterwards
+linux-prefix-hub                 the window (GTK 4 / libadwaita)
+  --gui                          the same thing, explicitly
+  --terminal                     the overview in the terminal instead
   --scan [--source X]            list games (steam | lutris | heroic)
   --status                       learned storage locations
   --connect GAME                 install the launch hook
   --disconnect GAME              remove it again
   --redirect GAME [--target P]   move storage into your home folder
   --undo-redirect GAME           move it back
-  --check-update / --update      GitHub releases
+  --check-update / --update      Velopack
   --integrate                    recreate shims/service/menu entry
   --lang / --set-language        language for this run / permanently
   --wrapper CMD...               internal: called by Steam/Heroic
@@ -145,25 +153,47 @@ linux-prefix-hub                 setup on first run, overview afterwards
 ~/Games/<Game>/                                           where saves go
 ```
 
+## Verified on real hardware
+
+Checked against a live Nobara/KDE-Wayland install with 13 games across two
+Steam libraries, Heroic (Flatpak) and GearLever (Flatpak):
+
+- ✅ **Steam roots** — 3 of the 5 candidates hit, `realpath` de-duplication
+  works. Multi-library discovery finds a library on another disk.
+- ✅ **`StateFlags & 4`** — all 21 real manifests read `4`. (The `1026`
+  "download running" value is only observable during a download, so that half
+  is still unverified.)
+- ✅ **Heroic `wrapperOptions`** — present verbatim in a real GamesConfig.
+- ✅ **GearLever target folder** — read from its GSettings keyfile
+  (`appimages-default-folder`) instead of guessed.
+- ✅ **The GUI from inside the AppImage** — hands over to the system
+  interpreter, since the bundled CPython has no PyGObject.
+
+Three bugs that only real data exposed, now fixed and covered by regression
+tests: a duplicate appid listed twice (same manifest in two libraries), Proton
+and the Linux runtimes listed as games (they are identifiable by a
+`toolmanifest.vdf`, by nothing inside the manifest), and Heroic's
+`download-manager.json` marking an installed game as not installed.
+
 ## ⚠️ Still to verify on real hardware (VERIFY-ON-DEVICE)
 
 Marked in the code at the relevant spots:
 
-1. **Steam roots** (`adapters/steam.py: STEAM_ROOT_CANDIDATES`) — extend per
-   distro/Flatpak if your install lives elsewhere.
-2. **`StateFlags` semantics** — `& 4 = installed`, checked against real
-   `appmanifest_*.acf` (Valve does not document it).
-3. **localconfig.vdf writing** — we keep a `.bak`; try it once on a game whose
+1. **localconfig.vdf writing** — we keep a `.bak`; try it once on a game whose
    launch options you can afford to lose.
-4. **Lutris `prelaunch_wait`** — makes Lutris wait for our pre-hook; the key
-   has moved between Lutris releases.
-5. **Heroic `wrapperOptions`** — correct for Heroic 2.x; check your version.
-6. **Registry redirection** — after the first redirected launch, confirm in
+2. **Lutris `prelaunch_wait`** — makes Lutris wait for our pre-hook; the key
+   has moved between Lutris releases. Discovery itself is verified against
+   Lutris 0.5.23, which keeps the per-game YAMLs under the *data* root
+   (`~/.local/share/lutris/games/`) and may not create `~/.config/lutris` at
+   all; both layouts are searched.
+3. **Registry redirection** — after the first redirected launch, confirm in
    `winecfg` → Desktop Integration that the folder points where you expect.
-7. **Desktop notifications from a systemd user service** — need a reachable
+4. **Desktop notifications from a systemd user service** — need a reachable
    D-Bus (`DBUS_SESSION_BUS_ADDRESS`).
-8. **GearLever target folder** (`core/integrate.py: detect_gearlever`) — it is
-   configurable.
+5. **The Velopack build** (`packaging/build-velopack.sh`) — never run end to
+   end: the machine it was written on had no working .NET SDK. Check that
+   `--mainExe` accepts a shell launcher, what file names `vpk` emits, and
+   whether GearLever still accepts a vpk-built AppImage.
 
 ## Documentation
 

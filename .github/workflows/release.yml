@@ -47,21 +47,24 @@ jobs:
             exit 1
           fi
 
-      # zsync: appimagetool shells out to zsyncmake to produce the .zsync
-      # file that makes delta self-updates possible.
-      # desktop-file-utils: appimagetool validates our .desktop with it.
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y zsync desktop-file-utils
+      # vpk is a .NET tool: it builds the AppImage and the release feed that
+      # core/updater.py reads.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0"
 
-      - name: Build AppImage
-        run: ./packaging/build-appimage.sh "${{ steps.version.outputs.version }}"
+      - name: Install vpk
+        run: |
+          dotnet tool install -g vpk
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Build the Velopack release
+        run: ./packaging/build-velopack.sh "${{ steps.version.outputs.version }}"
 
       - name: Smoke test the AppImage
         run: |
           export APPIMAGE_EXTRACT_AND_RUN=1
-          APP="$(ls build/LinuxPrefixHub-*-x86_64.AppImage)"
+          APP="$(ls build/release/*.AppImage | head -n1)"
           chmod +x "$APP"
           # Runs in a throwaway HOME so the self-heal cannot touch the runner.
           HOME="$(mktemp -d)" "$APP" --version
@@ -70,22 +73,20 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: LinuxPrefixHub-${{ steps.version.outputs.version }}-x86_64
-          path: |
-            build/*.AppImage
-            build/*.zsync
-            build/SHA256SUMS
+          path: build/release/*
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          # The whole output directory is the update feed -- upload all of it,
+          # not just the AppImage, or `--update` finds nothing.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" build/*.AppImage build/*.zsync \
-              build/SHA256SUMS --clobber
+            gh release upload "$TAG" build/release/* --clobber
           else
             gh release create "$TAG" \
               --title "Linux Prefix Hub ${{ steps.version.outputs.version }}" \
               --generate-notes \
-              build/*.AppImage build/*.zsync build/SHA256SUMS
+              build/release/*
           fi

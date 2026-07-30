@@ -11,15 +11,24 @@ see the words prefix, Wine or `steamuser`.
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q            # 66 tests, ~0.2s, no real Steam needed
+.venv/bin/python -m pytest -q            # 126 tests, ~1s, no real Steam needed
 .venv/bin/ruff check src tests           # lint (config pinned in pyproject)
 PYTHONPATH=src python -m linux_prefix_hub --scan
 HOME=/tmp/x PYTHONPATH=src python -m linux_prefix_hub   # setup flow, safely
-./packaging/build-appimage.sh            # needs network; zsync for release-grade
+PYTHONPATH=src /usr/bin/python3 -m linux_prefix_hub --gui   # needs system gi
+./packaging/build-velopack.sh            # release build; needs .NET SDK + vpk
+./packaging/build-appimage.sh            # local test build, cannot self-update
 ```
 
-Never run the app with the real `HOME` while testing setup: it writes shims,
-a systemd unit and a desktop entry.
+Never run the app with the real `HOME` while testing. **Redirecting only
+`XDG_*` is not enough:** `paths.LOCAL_BIN` and `DEFAULT_REDIRECT_ROOT` key off
+`Path.home()`, and the AppImage's AppRun self-heals (`--integrate`) on every
+non-shim start — so a single `--scan` through the AppImage rewrites the real
+`~/.local/bin` shims to point wherever that AppImage happens to live.
+
+The GUI needs system PyGObject, which the venv does not have. Run it with
+`/usr/bin/python3` as above, or let the AppImage hand over by itself
+(`__main__._reexec_gui`, which must strip `PYTHONHOME`).
 
 ## Layout — one line per file
 
@@ -34,7 +43,7 @@ a systemd unit and a desktop entry.
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
 | `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals |
 | `core/integrate.py` | AppImage relocation, the three shims, systemd unit, desktop entry. Idempotent |
-| `core/updater.py` | GitHub releases → check/download/verify SHA256/swap. GearLever wins if present |
+| `core/updater.py` | Velopack: `check`/`download`/`apply`. `app_hook()` only in the AppImage. GearLever wins if present |
 | `core/vdf.py` | Valve KeyValues read **and write** (localconfig round-trip) |
 | `core/yamlite.py` | Lutris-shaped YAML subset; uses PyYAML when installed. **Read only** |
 | `adapters/base.py` | Adapter contract, `iter_games()`, `context_from_env()`, `user_dir_for()` |
@@ -42,7 +51,9 @@ a systemd unit and a desktop entry.
 | `adapters/lutris.py` | pga.db + YAML discovery; hook = `prelaunch_command`/`postexit_command` |
 | `adapters/heroic.py` | GamesConfig JSON discovery; hook = `wrapperOptions` (wrap shape, like Steam) |
 | `daemon/watcher.py` | inotify on steamapps + periodic rescan; new-game and update notifications |
-| `gui/welcome.py` | Terminal setup flow. Logic split from presentation for the future GTK UI |
+| `gui/welcome.py` | Terminal setup flow. Logic split from presentation, shared with the GTK UI |
+| `gui/app.py` | GTK4/libadwaita window: game list, connect switch, move-home switch. Presentation only |
+| `gui/tasks.py` | One function: run blocking work off the GTK main loop, land the result via `idle_add` |
 
 ## Rules that are easy to break
 
@@ -52,7 +63,10 @@ a systemd unit and a desktop entry.
    edited line by line, Steam VDF and Heroic JSON keep a `.bak`. Reformatting
    a user's launcher config is a bug.
 3. **The wrapper may not break a launch.** Anything we do around the game is
-   wrapped in try/except and the game's exit code is passed through.
+   wrapped in try/except and the game's exit code is passed through — *and*
+   the game gets the environment it would have had without us
+   (`wrapper.game_env`). The AppImage's `PYTHONHOME`/`PYTHONPATH` leaking into
+   the child kills Proton, which is a Python program itself.
 4. **Discovery is defensive.** One broken manifest/config skips that entry, it
    never aborts the scan (`base.iter_games` isolates whole adapters too).
 5. **User-visible strings go through `_()` in English**, then into

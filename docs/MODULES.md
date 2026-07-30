@@ -94,11 +94,20 @@ mtime.
 ## `core/wrapper.py` — the launch hook
 
 `main(argv)` (wrap shape) and `hook(phase, source, app_id)` (pre/post shape),
-sharing `_before()` / `_after()`.
+sharing `_before()` / `_after()`, plus `game_env()`.
 
 Read-only towards the game except for `redirect.reapply()`, which repairs
 redirections the user already asked for. Every step is guarded so a failure in
 our code cannot stop the game, and the game's exit code is passed through.
+
+**Watch out:** `game_env()` undoes what the AppImage did to the environment
+(`BUNDLE_VARS`, `BUNDLE_LISTS`) before the game is started. Without it the
+child inherits `PYTHONHOME=$APPDIR/opt/python3.12`, and since Proton is a
+Python program run by *another* interpreter — inside a container that cannot
+even see our `/tmp` mount point — the launch dies before the game appears.
+Symptom: "the game stopped starting the moment I connected it". It returns
+`None` outside the AppImage, i.e. the child simply inherits. Anything AppRun
+starts exporting later belongs in those two tuples.
 
 ---
 
@@ -131,19 +140,28 @@ install-folder case fights with launcher updaters.
 
 ---
 
-## `core/updater.py` — self-update from GitHub
+## `core/updater.py` — self-update via Velopack
 
-`check(force)` (cached for a day in config.json), `latest_release()`,
-`update()`, `is_newer`, `parse_version`.
+`app_hook()`, `check(force)` (cached for a day in config.json), `update()`,
+`available()`, `is_newer`, `parse_version`.
 
-Order of preference: GearLever → `appimageupdatetool` (delta) → our own
-download with SHA-256 verification against the release's `SHA256SUMS`, then an
-atomic `os.replace` of the installed AppImage.
+Velopack owns the mechanics: `check_for_updates` → `download_updates` →
+`apply_updates_and_restart`, against the GitHub release feed that
+`packaging/build-velopack.sh` produces. We keep only two decisions of our own:
 
-Refuses politely for pip/pipx installs — that is pip's job.
+1. **GearLever first.** If it manages our AppImage we do nothing — two
+   updaters fighting over one file is worse than a slightly stale app.
+2. **`app_hook()` only inside the AppImage.** Outside it there is nothing to
+   finish, and Velopack's native layer writes a `NotInstalled` complaint
+   straight to stderr that no Python `except` can swallow. It is called from
+   `__main__.main` *after* the `--wrapper`/`--hook`/`--daemon` fast paths, so a
+   game launch never pays for importing a compiled SDK.
 
-**Building on it:** `GITHUB_OWNER`/`GITHUB_REPO` can be overridden in
-config.json (`github_owner`, `github_repo`) so forks work without a rebuild.
+Everything degrades to an honest message when the `velopack` wheel is absent
+(pip installs, and the local `build-appimage.sh` test build).
+
+**Building on it:** `github_owner`/`github_repo`, or `update_url` for a
+completely different feed, in config.json — no rebuild needed.
 
 ---
 
@@ -197,6 +215,21 @@ Discovery from `pga.db` (stdlib `sqlite3`, read-only) for names/runners, plus
 the per-game YAML for `game.prefix`. Falls back to scanning YAML files when
 pga.db is missing.
 
+`games_dirs()` is where the YAMLs are looked up: Lutris 0.5.23 keeps them under
+the **data** root (`~/.local/share/lutris/games/`) and can leave
+`~/.config/lutris` non-existent, older versions used the config root. Both are
+searched, and `config_roots()` accepts a root pair as soon as *either* half
+exists — gating on the config root alone found no games at all on a current
+install.
+
+Two de-duplication rules, both learned from a real library:
+`used` tracks config *files*, because the slug need not match the file name
+(`diablo-iv` lives in `diablo-iv-battlenet-<ts>.yml`) and the YAML fallback
+would otherwise yield the game twice; `_is_steam_mirror` drops the entries
+Lutris imports from the Steam library (`runner: steam`, `steam-<appid>-<ts>`),
+which have no prefix and are already listed — with a real one — by the Steam
+adapter. Anything that *does* have a prefix is always kept.
+
 `connect`/`disconnect` edit `prelaunch_command`, `postexit_command` and
 `prelaunch_wait` inside the `system:` block, line by line, with a `.bak`.
 
@@ -246,8 +279,46 @@ changes, only `_shim_body` needs to know; the fixed paths stay.
 `choose_install_dir(interactive)` (default, warns about unstable locations via
 `is_unstable`) and `run(interactive)` as the controller.
 
-**Building on it:** for the GTK version, replace `choose_install_dir` with a
-dialog and reuse `run`. The decision logic stays put.
+`is_unstable` matches **path components, not substrings**: inside the home
+folder only `Downloads`/`Desktop` count, and the home folder itself may sit
+anywhere (`/mnt/...` is a normal place for a home on a gaming box). The naive
+substring version warned about the *default* install location on such a setup.
+
+**Building on it:** the GTK front-end reuses this decision logic; only the
+presentation differs.
+
+---
+
+## `gui/app.py` — the window (GTK 4 / libadwaita)
+
+`main()`, `LphApplication`, `MainWindow`, `GameRow`, `LocationRow`, `esc()`.
+
+One `Adw.ExpanderRow` per game: a switch that calls the same
+`adapter.connect()` the CLI uses, and one `LocationRow` per learned save
+location whose switch calls `core.redirect`. `HookResult.manual` (Steam
+running) becomes a dialog with a copy button.
+
+Two rules that are easy to break:
+
+- **Escape every dynamic string** through `esc()`. Titles, subtitles, toasts
+  and dialog headings are parsed as Pango markup, and a real game name like
+  "Command & Conquer" makes GTK reject the *whole* string — the row then
+  renders with an empty title. Pass raw names around internally
+  (`GameRow._name`), never `get_title()`, or you get `&amp;` on screen.
+- **Never touch a widget from a worker thread.** Everything blocking goes
+  through `gui/tasks.run`, which lands the result on the main loop.
+
+Switch handlers use `state-set` and return `True`, driving the visual state
+themselves once the work finishes; `_syncing` guards against the feedback loop
+when we set the state programmatically.
+
+---
+
+## `gui/tasks.py` — off the main loop
+
+One function, `run(work, done)`: `work()` in a thread, `done(result, error)`
+via `GLib.idle_add`. `done` always runs, so a caller can re-enable the button
+it disabled without a second code path.
 
 ---
 
@@ -255,10 +326,14 @@ dialog and reuse `run`. The decision logic stays put.
 
 - **`AppRun`** — finds the bundled Python, passes the shim modes straight
   through, quietly self-heals on a normal start.
-- **`build-appimage.sh`** — downloads a relocatable CPython
-  (python-appimage), injects our package, packs with appimagetool and embeds
-  zsync update info. Degrades to a build without update info when `zsyncmake`
-  is missing.
+- **`build-velopack.sh`** — the release build. Downloads a relocatable
+  CPython (python-appimage), unpacks it into a plain directory, injects our
+  package plus the `velopack` wheel, writes the launcher and hands the
+  directory to `vpk pack`. Needs the .NET SDK. **VERIFY-ON-DEVICE:** never run
+  end to end yet.
+- **`build-appimage.sh`** — local test build for machines without .NET.
+  Deliberately ships no `velopack` wheel, so it cannot self-update and stays
+  quiet. Never publish its output.
 - **`make-icon.py`** — renders the icon PNG with stdlib only, so the build
   needs no image library.
 
@@ -269,5 +344,6 @@ dialog and reuse `run`. The decision logic stays put.
 - **`ci.yml`** — ruff + pytest on 3.10 and 3.12, once without and once with
   the optional extras (the dependency-free path must keep working).
 - **`release.yml`** — on a `v*` tag: verify the tag matches `__version__`,
-  build, smoke-test the AppImage in a throwaway HOME, publish AppImage +
-  `.zsync` + `SHA256SUMS` to the release.
+  install the .NET SDK and `vpk`, build, smoke-test the AppImage in a
+  throwaway HOME, publish **all** of `build/release/` — that directory is the
+  update feed, and uploading only the AppImage breaks `--update`.

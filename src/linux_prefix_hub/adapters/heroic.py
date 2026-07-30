@@ -82,6 +82,12 @@ def _walk(node: Any) -> Iterator[dict[str, Any]]:
             yield from _walk(value)
 
 
+# Files shaped like a library cache that are not one. The download manager
+# keeps queue records with an `install` dict and `is_installed: false`, which
+# says "not finished downloading", not "not installed".
+NOT_A_LIBRARY = {"download-manager.json"}
+
+
 def _library_index(root: Path) -> dict[str, dict[str, Any]]:
     """appName -> {title, installed, install_path} from any store cache.
 
@@ -93,7 +99,8 @@ def _library_index(root: Path) -> dict[str, dict[str, Any]]:
     for sub in ("store_cache", "store", "gog_store", "sideload_apps", "."):
         d = root / sub
         if d.is_dir():
-            candidates += sorted(d.glob("*.json"))
+            candidates += sorted(p for p in d.glob("*.json")
+                                 if p.name not in NOT_A_LIBRARY)
     for path in candidates:
         for obj in _walk(_read_json(path)):
             app_name = obj.get("app_name") or obj.get("appName")
@@ -104,7 +111,12 @@ def _library_index(root: Path) -> dict[str, dict[str, Any]]:
             entry.setdefault("title", str(title))
             install = obj.get("install")
             if obj.get("is_installed") or isinstance(install, dict):
-                entry["installed"] = bool(
+                # OR, never assignment: several caches describe the same
+                # game and only some of them know about the installation.
+                # A source that says "installed" must not be overruled by
+                # one that simply does not know (VERIFY-ON-DEVICE finding:
+                # download-manager.json downgraded an installed game).
+                entry["installed"] = bool(entry.get("installed")) or bool(
                     obj.get("is_installed", bool(install)))
                 if isinstance(install, dict):
                     entry.setdefault("install_path",

@@ -35,23 +35,52 @@ def running_as_appimage() -> str | None:
     return os.environ.get("APPIMAGE")  # set by AppRun
 
 
+# Flatpak GearLever stores its GSettings in a plain keyfile, so we can read
+# the folder the user actually configured instead of guessing it.
+GEARLEVER_KEYFILE = Path.home() / (
+    ".var/app/it.mijorus.gearlever/config/glib-2.0/settings/keyfile")
+GEARLEVER_SETTING = "appimages-default-folder"
+
+
+def gearlever_folders() -> list[Path]:
+    """Folders GearLever may keep managed AppImages in, best first.
+
+    The configured folder wins; the static candidates stay as a fallback for
+    a non-Flatpak GearLever whose settings live in dconf.
+    """
+    folders: list[Path] = []
+    try:
+        text = GEARLEVER_KEYFILE.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == GEARLEVER_SETTING:
+            configured = value.strip().strip("'\"")
+            if configured:
+                folders.append(Path(os.path.expanduser(configured)))
+            break
+    folders += [Path.home() / ".local" / "share" / "AppImages",
+                Path.home() / "AppImages",
+                Path.home() / "Applications"]
+    unique: list[Path] = []
+    for folder in folders:
+        if folder not in unique:
+            unique.append(folder)
+    return unique
+
+
 def detect_gearlever() -> Path | None:
     """Has GearLever already integrated this app?
 
-    Heuristic: GearLever keeps AppImages in ~/.local/share/AppImages/ (or
-    ~/AppImages/). If we run from there, we assume GearLever manages us and do
-    not relocate.
-
-    VERIFY-ON-DEVICE: GearLever's target folder is configurable; adjust to
-    your actual installation if needed.
+    If we run from a folder GearLever manages, it owns placement and updates
+    and we must not relocate ourselves.
     """
     appimg = running_as_appimage()
     if not appimg:
         return None
     real = Path(os.path.realpath(appimg))
-    for gd in (Path.home() / ".local" / "share" / "AppImages",
-               Path.home() / "AppImages",
-               Path.home() / "Applications"):
+    for gd in gearlever_folders():
         try:
             if gd in real.parents:
                 return real
@@ -159,8 +188,10 @@ def install_desktop_entry() -> Path | None:
     if detect_gearlever():
         return None
     appimg = _target_appimage()
-    exec_line = (f'"{appimg}"' if appimg.exists()
-                 else f'"{sys.executable}" -m {paths.PACKAGE}')
+    # --gui explicitly: the entry has Terminal=false, so the terminal flow
+    # would be invisible here.
+    exec_line = (f'"{appimg}" --gui' if appimg.exists()
+                 else f'"{sys.executable}" -m {paths.PACKAGE} --gui')
     DESKTOP_FILE.parent.mkdir(parents=True, exist_ok=True)
     DESKTOP_FILE.write_text(
         "[Desktop Entry]\n"

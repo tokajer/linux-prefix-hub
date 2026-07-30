@@ -84,6 +84,67 @@ def test_wrapper_without_a_command_complains():
     assert wrapper.main([]) == 2
 
 
+# --- what the game inherits ---------------------------------------------
+def _as_appimage(monkeypatch, appdir="/tmp/.mount_abc"):
+    """Pretend we were started through the AppImage's AppRun."""
+    monkeypatch.setenv("APPDIR", appdir)
+    monkeypatch.setenv("APPIMAGE", "/home/me/.local/share/x/App.AppImage")
+    monkeypatch.setenv("PYTHONHOME", f"{appdir}/opt/python3.12")
+    monkeypatch.setenv("PYTHONPATH", f"{appdir}/usr/lib/python:/opt/mine")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    return appdir
+
+
+def test_the_game_does_not_inherit_our_interpreter(monkeypatch):
+    """PYTHONHOME reaching the game breaks Proton -- it is Python too."""
+    from linux_prefix_hub.core import wrapper
+    _as_appimage(monkeypatch)
+    monkeypatch.setenv("SteamAppId", "620")     # the launcher's own vars stay
+
+    env = wrapper.game_env()
+
+    assert env is not None
+    assert "PYTHONHOME" not in env
+    assert "APPDIR" not in env and "APPIMAGE" not in env
+    assert "PYTHONDONTWRITEBYTECODE" not in env
+    assert env["PYTHONPATH"] == "/opt/mine"     # ours dropped, theirs kept
+    assert env["SteamAppId"] == "620"
+
+
+def test_a_bundle_only_path_list_disappears_entirely(monkeypatch):
+    from linux_prefix_hub.core import wrapper
+    appdir = _as_appimage(monkeypatch)
+    monkeypatch.setenv("PYTHONPATH", f"{appdir}/usr/lib/python:")
+
+    assert "PYTHONPATH" not in (wrapper.game_env() or {})
+
+
+def test_outside_the_appimage_the_environment_is_left_alone(monkeypatch):
+    from linux_prefix_hub.core import wrapper
+    monkeypatch.delenv("APPDIR", raising=False)
+    assert wrapper.game_env() is None
+
+
+def test_the_game_really_runs_without_pythonhome(context, tmp_path,
+                                                 monkeypatch):
+    """End to end: the child process must not see our bundle.
+
+    Without the cleanup this does not just fail the assertion -- the child
+    interpreter dies on the bogus PYTHONHOME, which is exactly what happens
+    to Proton.
+    """
+    from linux_prefix_hub.core import wrapper
+    _as_appimage(monkeypatch)
+    seen = tmp_path / "seen.txt"
+    code = wrapper.main([
+        sys.executable, "-c",
+        f"import os,pathlib;pathlib.Path({str(seen)!r}).write_text("
+        "os.environ.get('PYTHONHOME','') + '|' + os.environ.get('APPDIR',''))"
+    ])
+    assert code == 0
+    assert seen.read_text() == "|"
+
+
 # --- CLI -----------------------------------------------------------------
 def _run(monkeypatch, *args) -> int:
     from linux_prefix_hub import __main__
@@ -147,3 +208,108 @@ def test_version_flag(monkeypatch, capsys):
         _run(monkeypatch, "--version")
     assert exc.value.code == 0
     assert __version__ in capsys.readouterr().out
+
+
+# --- how a bare start reaches the window ---------------------------------
+def _gui_env(monkeypatch, *, display, gtk_here):
+    """Pretend we have/haven't a display and GTK in this interpreter."""
+    from linux_prefix_hub import __main__ as m
+    monkeypatch.setattr(m, "_has_display", lambda: display)
+    monkeypatch.setattr(m, "_has_gtk", lambda: gtk_here)
+    return m
+
+
+def _set_up(monkeypatch):
+    """Mark setup as done, so the terminal flow prints the overview instead
+    of running the whole first-run setup (which shells out to systemctl)."""
+    from linux_prefix_hub.core import db, integrate
+    db.set_config("setup_done", True)
+    monkeypatch.setattr(integrate.subprocess, "run", lambda *a, **kw: None)
+
+
+def _stub_gui(monkeypatch, main):
+    """Stand in for gui.app without importing it.
+
+    The real module imports `gi`, which the venv does not have -- the suite
+    must keep running on the dependency-free path.
+    """
+    import sys
+    import types
+
+    import linux_prefix_hub.gui as gui_pkg
+    module = types.ModuleType("linux_prefix_hub.gui.app")
+    module.main = main
+    monkeypatch.setitem(sys.modules, "linux_prefix_hub.gui.app", module)
+    monkeypatch.setattr(gui_pkg, "app", module, raising=False)
+    return module
+
+
+def test_bare_start_opens_the_window(monkeypatch):
+    """No arguments must mean the window, not the overview."""
+    _gui_env(monkeypatch, display=True, gtk_here=True)
+    opened: list[str] = []
+    _stub_gui(monkeypatch, lambda *a: opened.append("gui") or 0)
+
+    assert _run(monkeypatch) == 0
+    assert opened == ["gui"]
+
+
+def test_bare_start_hands_over_when_this_interpreter_lacks_gtk(monkeypatch,
+                                                               capsys):
+    """The AppImage case: its bundled CPython has no PyGObject, so the old
+    `_gui_available()` check sent a bare start to the terminal instead of
+    trying the hand-over at all."""
+    m = _gui_env(monkeypatch, display=True, gtk_here=False)
+    tried: list[str] = []
+    monkeypatch.setattr(m, "_reexec_gui",
+                        lambda: tried.append("reexec") or 1)
+
+    _run(monkeypatch)
+
+    assert tried == ["reexec"]
+
+
+def test_no_display_falls_back_without_probing(monkeypatch, capsys):
+    """On a TTY or over ssh there is nothing to draw on -- and no point
+    probing every interpreter on the box for GTK."""
+    m = _gui_env(monkeypatch, display=False, gtk_here=False)
+    _set_up(monkeypatch)
+    monkeypatch.setattr(m, "_reexec_gui",
+                        lambda: pytest.fail("probed without a display"))
+    _stub_gui(monkeypatch, lambda *a: pytest.fail("opened a window"))
+
+    assert _run(monkeypatch) == 0
+    assert "--scan" in capsys.readouterr().out      # the overview
+
+
+def test_terminal_flag_skips_the_window(monkeypatch, capsys):
+    _gui_env(monkeypatch, display=True, gtk_here=True)
+    _set_up(monkeypatch)
+    _stub_gui(monkeypatch, lambda *a: pytest.fail("opened a window"))
+
+    assert _run(monkeypatch, "--terminal") == 0
+    assert "--scan" in capsys.readouterr().out
+
+
+def test_handover_env_drops_pythonhome(monkeypatch):
+    """PYTHONHOME points at the bundled interpreter; inheriting it makes any
+    other interpreter load the wrong standard library."""
+    from linux_prefix_hub import __main__ as m
+    monkeypatch.setenv("PYTHONHOME", "/appimage/opt/python3.12")
+    monkeypatch.setenv("PYTHONPATH", "/appimage/usr/lib/python")
+
+    env = m._handover_env()
+
+    assert "PYTHONHOME" not in env
+    assert env["PYTHONPATH"] != "/appimage/usr/lib/python"
+    assert env["PYTHONPATH"].endswith("src") or "linux_prefix_hub" not in \
+        env["PYTHONPATH"].rsplit("/", 1)[-1]
+    assert env[m.REEXEC_FLAG] == "1"
+
+
+def test_reexec_does_not_loop(monkeypatch):
+    from linux_prefix_hub import __main__ as m
+    monkeypatch.setenv(m.REEXEC_FLAG, "1")
+    monkeypatch.setattr(m, "_system_python_with_gtk",
+                        lambda env: pytest.fail("looked again after handover"))
+    assert m._reexec_gui() == 1

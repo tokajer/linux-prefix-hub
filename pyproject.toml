@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "linux-prefix-hub"
-version = "0.2.0"
+version = "0.3.0"
 description = "Know where your Windows games on Linux store their saves -- and move those saves into your home folder"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,16 +21,24 @@ classifiers = [
 ]
 
 # The core is dependency-free on purpose (own VDF/YAML readers, poll
-# fallback, stdlib sqlite3/urllib). The extras improve the experience but
-# are never required.
+# fallback, stdlib sqlite3). The extras improve the experience but are
+# never required -- every consumer of them degrades to an honest message.
 dependencies = []
 
 [project.optional-dependencies]
+# Self-update. Shipped inside the AppImage, which is the only build that can
+# update itself; a pip install is updated by pip.
+update = ["velopack>=1.2"]
+# The graphical interface. Not pip-installable in practice -- PyGObject wants
+# system GTK 4 and libadwaita, so distro packages are the sane route
+# (Fedora/Nobara: python3-gobject gtk4 libadwaita).
+gui = ["PyGObject>=3.50"]
 # Recommended for daily use:
 full = [
   "inotify_simple>=1.3",  # instant new-game detection instead of polling
   "vdf>=3.4",             # sturdier VDF parser, including binary VDFs
   "PyYAML>=6.0",          # full YAML instead of our Lutris-shaped subset
+  "velopack>=1.2",        # self-update
 ]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 

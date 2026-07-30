@@ -104,15 +104,17 @@ system:
 """
 
 
-def _fake_lutris(home, tmp_path, monkeypatch, prefix):
+def _fake_lutris(home, tmp_path, monkeypatch, prefix, layout="config"):
+    """A Lutris install. `layout` picks where the per-game YAMLs live:
+    "config" is the old location, "data" what 0.5.23 actually uses."""
     from linux_prefix_hub.adapters import lutris
     cfg_root = home / ".config/lutris"
     data_root = home / ".local/share/lutris"
-    (cfg_root / "games").mkdir(parents=True)
     data_root.mkdir(parents=True)
+    games = (data_root if layout == "data" else cfg_root) / "games"
+    games.mkdir(parents=True)
 
-    write(cfg_root / "games/quake-1690000000.yml",
-          LUTRIS_YML.format(prefix=prefix))
+    write(games / "quake-1690000000.yml", LUTRIS_YML.format(prefix=prefix))
 
     con = sqlite3.connect(data_root / "pga.db")
     con.execute("CREATE TABLE games (id INTEGER, name TEXT, slug TEXT, "
@@ -135,6 +137,65 @@ def test_lutris_discovery(isolated_home, tmp_path, monkeypatch, fake_prefix):
     assert games[0]["game_name"] == "Quake"          # name from pga.db
     assert games[0]["prefix_path"] == str(fake_prefix)   # prefix from YAML
     assert games[0]["managed"] is False
+
+
+def test_lutris_discovery_without_a_config_root(isolated_home, tmp_path,
+                                                monkeypatch, fake_prefix):
+    """Lutris 0.5.23 keeps everything under the data root and may never
+    create ~/.config/lutris -- gating on it found no games at all."""
+    lutris = _fake_lutris(isolated_home, tmp_path, monkeypatch, fake_prefix,
+                          layout="data")
+    assert not (isolated_home / ".config/lutris").exists()
+
+    games = list(lutris.iter_games())
+    assert [g["game_name"] for g in games] == ["Quake"]
+    assert games[0]["prefix_path"] == str(fake_prefix)
+
+    # ... and the hook still lands in the right file.
+    assert lutris.connect("quake").ok
+    text = (isolated_home / ".local/share/lutris/games/quake-1690000000.yml"
+            ).read_text(encoding="utf-8")
+    assert "prelaunch_command:" in text
+    assert next(iter(lutris.iter_games()))["managed"] is True
+
+
+def test_lutris_yields_a_game_once_when_slug_and_file_disagree(
+        isolated_home, tmp_path, monkeypatch, fake_prefix):
+    """Lutris does not name the config file after the slug: "diablo-iv"
+    lives in "diablo-iv-battlenet-<ts>.yml". The YAML fallback must
+    recognise the file as already taken."""
+    lutris = _fake_lutris(isolated_home, tmp_path, monkeypatch, fake_prefix,
+                          layout="data")
+    data_root = isolated_home / ".local/share/lutris"
+    write(data_root / "games/diablo-iv-battlenet-1767711128.yml",
+          LUTRIS_YML.format(prefix=fake_prefix))
+    con = sqlite3.connect(data_root / "pga.db")
+    con.execute("INSERT INTO games VALUES (2, 'Diablo IV', 'diablo-iv', "
+                "'wine', '/games/d4', 'diablo-iv-battlenet-1767711128', 1)")
+    con.commit()
+    con.close()
+
+    names = [g["game_name"] for g in lutris.iter_games()]
+    assert names == ["Quake", "Diablo IV"]
+
+
+def test_lutris_hides_mirrored_steam_entries(isolated_home, tmp_path,
+                                             monkeypatch, fake_prefix):
+    """Lutris imports the Steam library; those rows have no prefix and the
+    Steam adapter already lists the same games."""
+    lutris = _fake_lutris(isolated_home, tmp_path, monkeypatch, fake_prefix,
+                          layout="data")
+    data_root = isolated_home / ".local/share/lutris"
+    write(data_root / "games/steam-730-1764867908.yml",
+          "game_slug: counter-strike-2\nname: Counter-Strike 2\n")
+    con = sqlite3.connect(data_root / "pga.db")
+    con.execute("INSERT INTO games VALUES (2, 'Counter-Strike 2', "
+                "'counter-strike-2', 'steam', NULL, "
+                "'steam-730-1764867908', 1)")
+    con.commit()
+    con.close()
+
+    assert [g["game_name"] for g in lutris.iter_games()] == ["Quake"]
 
 
 def test_lutris_connect_injects_hooks_and_keeps_the_file(
@@ -244,3 +305,87 @@ def test_a_broken_adapter_does_not_break_the_scan(tmp_path, monkeypatch):
 
     names = {g["game_name"] for g in base.iter_games()}
     assert "Cyberpunk 2077" in names
+
+
+# --- Regressions found by verifying against a real installation ----------
+def test_steam_skips_tools_and_runtimes(tmp_path, monkeypatch):
+    """Proton and the Linux runtimes are not games.
+
+    Real finding: no field in appmanifest_*.acf distinguishes them -- the key
+    sets are identical. A toolmanifest.vdf in the install dir does.
+    """
+    steam, root = _fake_steam(tmp_path, monkeypatch)
+    steamapps = root / "steamapps"
+    write(steamapps / "appmanifest_1493710.acf",
+          '"AppState"{"appid" "1493710" "name" "Proton Experimental" '
+          '"StateFlags" "4" "installdir" "Proton - Experimental"}')
+    write(steamapps / "common/Proton - Experimental/toolmanifest.vdf",
+          '"manifest"{"commandline" "/proton run"}')
+    write(steamapps / "appmanifest_228980.acf",
+          '"AppState"{"appid" "228980" '
+          '"name" "Steamworks Common Redistributables" '
+          '"StateFlags" "4" "installdir" "Steamworks Shared"}')
+
+    ids = {g["app_id"] for g in steam.iter_games()}
+    assert "1091500" in ids                      # the game survives
+    assert "1493710" not in ids                  # toolmanifest.vdf
+    assert "228980" not in ids                   # known depot-only app
+
+
+def test_steam_yields_a_shared_appid_once(tmp_path, monkeypatch):
+    """The same manifest in two libraries used to appear twice."""
+    steam, root = _fake_steam(tmp_path, monkeypatch)
+    manifest = ('"AppState"{"appid" "1091500" "name" "Cyberpunk 2077" '
+                '"StateFlags" "4" "installdir" "Cyberpunk 2077"}')
+    write(tmp_path / "games/SteamLibrary/steamapps/appmanifest_1091500.acf",
+          manifest)
+
+    games = [g for g in steam.iter_games() if g["app_id"] == "1091500"]
+    assert len(games) == 1
+    # The copy that has the prefix wins -- that is the one being played.
+    assert games[0]["prefix_path"] is not None
+
+
+def test_steam_duplicate_prefers_the_installed_copy(tmp_path, monkeypatch):
+    steam, root = _fake_steam(tmp_path, monkeypatch)
+    # A stale, half-removed manifest for a game installed elsewhere.
+    write(root / "steamapps/appmanifest_1245620.acf",
+          '"AppState"{"appid" "1245620" "name" "ELDEN RING" '
+          '"StateFlags" "4" "installdir" "ELDEN RING"}')
+
+    games = [g for g in steam.iter_games() if g["app_id"] == "1245620"]
+    assert len(games) == 1
+    assert games[0]["installed"] is True
+
+
+def test_heroic_download_queue_cannot_unset_installed(isolated_home,
+                                                      monkeypatch,
+                                                      fake_prefix):
+    """Real finding: download-manager.json carries `is_installed: false`
+    plus an `install` dict for a game that is long since installed."""
+    import json
+
+    heroic, root = _fake_heroic(isolated_home, monkeypatch, fake_prefix)
+    write(root / "download-manager.json", json.dumps({
+        "queue": [{"app_name": "9a1b2c", "title": "ELDEN RING",
+                   "is_installed": False,
+                   "install": {"install_path": "/games/elden"}}],
+    }))
+
+    game = next(iter(heroic.iter_games()))
+    assert game["installed"] is True
+
+
+def test_heroic_installed_is_or_ed_across_caches(isolated_home, monkeypatch,
+                                                 fake_prefix):
+    """A cache that does not know about the install must not overrule one
+    that does -- regardless of which file sorts last."""
+    import json
+
+    heroic, root = _fake_heroic(isolated_home, monkeypatch, fake_prefix)
+    write(root / "store_cache/zz_last_alphabetically.json", json.dumps({
+        "games": [{"app_name": "9a1b2c", "title": "ELDEN RING",
+                   "is_installed": False, "install": {}}],
+    }))
+
+    assert next(iter(heroic.iter_games()))["installed"] is True

@@ -195,3 +195,31 @@ def test_every_german_string_keeps_its_placeholders():
             continue
         assert set(pattern.findall(source)) == \
             set(pattern.findall(translated)), source
+
+
+def test_gearlever_configured_folder_wins(isolated_home, monkeypatch):
+    """GearLever's target folder is configurable; read it, do not guess."""
+    import importlib
+
+    from linux_prefix_hub.core import integrate
+    keyfile = (isolated_home
+               / ".var/app/it.mijorus.gearlever/config/glib-2.0/settings"
+               / "keyfile")
+    keyfile.parent.mkdir(parents=True)
+    keyfile.write_text("[it/mijorus/gearlever]\n"
+                       "appimages-default-folder='~/MyApps'\n",
+                       encoding="utf-8")
+    importlib.reload(integrate)
+
+    folders = integrate.gearlever_folders()
+    assert folders[0] == isolated_home / "MyApps"
+    assert len(folders) == len(set(folders))          # no duplicates
+
+    managed = isolated_home / "MyApps/LinuxPrefixHub.AppImage"
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    managed.write_text("x")
+    monkeypatch.setenv("APPIMAGE", str(managed))
+    assert integrate.detect_gearlever() == managed
+
+    monkeypatch.setenv("APPIMAGE", str(isolated_home / "elsewhere/x.AppImage"))
+    assert integrate.detect_gearlever() is None

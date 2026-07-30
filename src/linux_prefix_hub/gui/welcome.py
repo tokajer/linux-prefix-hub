@@ -18,13 +18,35 @@ from pathlib import Path
 from ..core import db, integrate, paths
 from ..core.i18n import _
 
-UNSTABLE_HINTS = ("downloads", "desktop", "/tmp", "/media/", "/run/media/",
-                  "/mnt/")
+# Locations that get cleaned up or are not always mounted.
+UNSTABLE_ROOTS = ("/tmp", "/var/tmp", "/media", "/run/media", "/mnt")
+# Inside the home folder only these two are volatile.
+UNSTABLE_HOME_DIRS = ("downloads", "desktop")
 
 
 def is_unstable(path: Path) -> bool:
-    p = str(path).lower()
-    return any(h in p for h in UNSTABLE_HINTS)
+    """Is `path` a place an installed app tends to disappear from?
+
+    Matches path components, never substrings: a home folder that lives on a
+    mounted disk (`/mnt/...`) or a user directory that happens to contain the
+    word "desktop" must not trigger a warning for the default location.
+    """
+    p = Path(os.path.expanduser(str(path)))
+    try:
+        rel = p.resolve().relative_to(Path.home().resolve())
+    except (OSError, ValueError):
+        rel = None
+
+    if rel is not None:
+        # Inside the home folder: the home folder itself may sit anywhere.
+        first = rel.parts[0].lower() if rel.parts else ""
+        return first in UNSTABLE_HOME_DIRS
+
+    for root in UNSTABLE_ROOTS:
+        base = Path(root)
+        if p == base or base in p.parents:
+            return True
+    return False
 
 
 def choose_install_dir(interactive: bool = True) -> Path:
