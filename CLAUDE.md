@@ -85,6 +85,11 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
    `locales/de.json` with identical `{placeholders}` (a test enforces that).
 6. **No Wine/prefix/Proton vocabulary in user-visible text** — "game folder",
    "connect", "moved to". Internal names and comments stay technical.
+   **And not "saves"/"Spielstände" for the whole either:** what we detect and
+   move is settings, logs and caches as much as save games. The user-facing
+   words are "game data"/"Spieldaten" for the content and "storage
+   location"/"Speicherort" for a place. `location["type"]` still says `saves`
+   — that is the type of one location, not the name of the thing.
 7. **Registry edits need the prefix idle** (`registry.prefix_in_use`), because
    Wine flushes its in-memory registry over `user.reg` on shutdown.
 8. Line length 79. `from __future__ import annotations`. Lazy imports inside

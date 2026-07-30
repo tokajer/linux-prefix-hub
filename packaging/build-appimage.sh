@@ -111,7 +111,7 @@ cat > "${APPDIR}/linux-prefix-hub.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Linux Prefix Hub
-Comment=Manage where your games store saves
+Comment=Manage where your games store their data
 Exec=AppRun
 Icon=linux-prefix-hub
 Categories=Game;Utility;

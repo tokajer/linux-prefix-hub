@@ -15,9 +15,9 @@ Matches the AppImage concept: ONE artifact, several modes.
   --scan             list games from all sources
   --status           show what we learned
   --connect GAME     install the launch hook for one game
-  --lookup GAME      ask PCGamingWiki where it saves, without playing it
+  --lookup GAME      ask PCGamingWiki where it stores things, unplayed
   --redirect GAME    move its storage locations into your home
-  --open GAME        show its save folder in the file manager
+  --open GAME        show its data folder in the file manager
 
 The three shim modes are dispatched before argparse and with lazy imports, so
 a game launch pays for nothing it does not use.
@@ -121,7 +121,7 @@ def _game_folder(needle: str, entry: dict | None) -> str | None:
 
 
 def _cmd_open(needle: str) -> int:
-    """Show a game's save folder in the file manager.
+    """Show a game's data folder in the file manager.
 
     Falls back to the game folder itself. "Where does this game keep its
     things?" has an answer before we have learned anything -- and that answer
@@ -149,7 +149,7 @@ def _cmd_open(needle: str) -> int:
                 "(yet).", game=entry.get("game_name")))
     else:
         print(_("'{needle}' is not in the list yet. Connect the game and play "
-                "it once so we know where it stores things.", needle=needle))
+                "it once so we know where it stores its data.", needle=needle))
     return 1
 
 
@@ -195,7 +195,7 @@ def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
     found = db.resolve(needle)
     if not found:
         print(_("'{needle}' is not in the list yet. Connect the game and play "
-                "it once so we know where it stores things.", needle=needle))
+                "it once so we know where it stores its data.", needle=needle))
         return 1
     fingerprint, entry = found
 
@@ -209,7 +209,7 @@ def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
                 game=entry.get("game_name")))
         if any(loc.get("where") == "game_folder"
                for loc in entry.get("storage_locations", [])):
-            print(_("This game keeps its saves in its own folder. That "
+            print(_("This game keeps its data in its own folder. That "
                     "cannot be moved safely -- use --open to look at it."))
         return 1
     if target and len(roots) > 1:
@@ -436,12 +436,13 @@ def _cmd_terminal() -> int:
     print("  --gui      " + _("open the window (this is the default)"))
     print("  --scan     " + _("list your games"))
     print("  --connect  " + _("connect a game so we can learn from it"))
-    print("  --lookup   " + _("look up online where a game saves"))
+    print("  --lookup   " + _("look up online where a game stores its data"))
     print("  --status   " + _("show learned storage locations"))
     print("  --redirect " + _("move a game's storage into your home folder"))
-    print("  --open     " + _("show a game's save folder in the file "
+    print("  --open     " + _("show a game's data folder in the file "
                               "manager"))
-    print("  " + _("Saves are kept in {path}.", path=str(db.redirect_root())))
+    print("  " + _("Game data is kept in {path}.",
+                   path=str(db.redirect_root())))
     return 0
 
 
@@ -497,14 +498,18 @@ def _build_parser() -> Any:
 
     p = argparse.ArgumentParser(
         prog=paths.APP_NAME,
-        description=_("Find out where your games store their saves -- and "
-                      "optionally move those saves into your home folder."))
+        description=_("Find out where your games store their data -- and "
+                      "optionally move that data into your home folder."))
     p.add_argument("--lang", metavar="CODE",
                    help=_("language for this run (en, de, auto)"))
     p.add_argument("--set-language", metavar="CODE",
                    help=_("remember a language (en, de, auto)"))
-    p.add_argument("--set-save-folder", metavar="PATH",
-                   help=_("remember where moved saves should be kept"))
+    # --set-save-folder is the name this shipped under. It stays, silently:
+    # a flag in somebody's script must not stop working because we found a
+    # better word for it.
+    p.add_argument("--set-data-folder", "--set-save-folder", metavar="PATH",
+                   dest="set_data_folder",
+                   help=_("remember where moved game data should be kept"))
     p.add_argument("--add-game-folder", metavar="PATH",
                    help=_("also look for games in this folder"))
     p.add_argument("--forget-game-folder", metavar="PATH",
@@ -532,13 +537,13 @@ def _build_parser() -> Any:
     g.add_argument("--disconnect", metavar="GAME",
                    help=_("remove the launch hook again"))
     g.add_argument("--lookup", metavar="GAME",
-                   help=_("look up online where a game saves"))
+                   help=_("look up online where a game stores its data"))
     g.add_argument("--redirect", metavar="GAME",
                    help=_("move a game's storage into your home folder"))
     g.add_argument("--undo-redirect", metavar="GAME",
                    help=_("move it back into the game folder"))
     g.add_argument("--open", metavar="GAME",
-                   help=_("show a game's save folder in the file manager"))
+                   help=_("show a game's data folder in the file manager"))
     g.add_argument("--integrate", action="store_true",
                    help=_("(re)create shims, service and menu entry"))
     g.add_argument("--check-update", action="store_true",
@@ -595,12 +600,12 @@ def main() -> int:
             print(_("Language set to '{lang}'.", lang=parsed.set_language))
             return 0
 
-    if parsed.set_save_folder:
+    if parsed.set_data_folder:
         import os
-        root = os.path.abspath(os.path.expanduser(parsed.set_save_folder))
+        root = os.path.abspath(os.path.expanduser(parsed.set_data_folder))
         db.set_config("redirect_root", root)
         if not any(getattr(parsed, name) for name in other_commands):
-            print(_("Saves will be kept in {path}.", path=root))
+            print(_("Game data will be kept in {path}.", path=root))
             print(_("Already moved folders stay where they are."))
             return 0
 

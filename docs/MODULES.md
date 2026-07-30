@@ -247,7 +247,7 @@ symlink → write the registry → set the DB flags. `reapply` is the self-heal
 called before each launch.
 
 `default_target` resolves its root through `db.redirect_root()` — configurable
-(`redirect_root` in config.json, the Settings dialog, `--set-save-folder`),
+(`redirect_root` in config.json, the Settings dialog, `--set-data-folder`),
 default `~/Games/linux-prefix-hub/`. Changing it never strands data: a moved
 location stores its absolute `redirect_target`, so only *future* moves follow
 the new root.
@@ -484,7 +484,7 @@ there is nothing else to show.
 One `Adw.ExpanderRow` per game: a switch that calls the same
 `adapter.connect()` the CLI uses, a search button that calls
 `pcgw.lookup_and_store()` (network, so off the main loop like everything else),
-and one row per learned save location.
+and one row per learned storage location.
 `LocationRow` (a shell folder) carries the switch that calls `core.redirect`;
 `FixedLocationRow` is the read-only twin for everything that cannot be moved —
 the install folder, or a prefix path outside any shell folder. Both carry an

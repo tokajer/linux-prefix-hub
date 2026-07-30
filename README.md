@@ -1,8 +1,8 @@
 # Linux Prefix Hub
 
-Finds your Steam/Lutris/Heroic games, learns **where they save** while you
-play, and can move those saves into your home folder — without you ever having
-to think about prefixes, `steamuser` or `%appdata%`.
+Finds your Steam/Lutris/Heroic games, learns **where they put their data**
+while you play, and can move that data into your home folder — without you
+ever having to think about prefixes, `steamuser` or `%appdata%`.
 
 The interface speaks your language: **German on a German desktop, English
 everywhere else.** Nothing to configure.
@@ -11,7 +11,7 @@ everywhere else.** Nothing to configure.
 linux-prefix-hub --scan                  # your games, from every launcher
 linux-prefix-hub --connect "Cyberpunk"   # let us learn from it
 linux-prefix-hub --status                # what we learned
-linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/linux-prefix-hub/
+linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/
 ```
 
 ## What it does
@@ -19,20 +19,20 @@ linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/linux-prefix-hub/
 - **Discovery** across Steam (all libraries), Lutris (pga.db + YAML) and
   Heroic (GamesConfig JSON) — with the real game names, not app ids. Games you
   set up by hand, without any launcher, are found too (see below).
-- **Learning where a game saves**, by snapshotting the game folder before and
-  after a session and diffing. No database of known games required; it works
-  for obscure titles too.
+- **Learning where a game puts its data**, by snapshotting the game folder
+  before and after a session and diffing. No database of known games
+  required; it works for obscure titles too.
 - **Or asking PCGamingWiki**, if you would rather not play first: one lookup
-  and the known save locations are there. Optional, cached, and never done
+  and the known storage locations are there. Optional, cached, and never done
   behind your back — see below.
 - **Connecting** a game installs the launch hook *in the launcher's own
   config*. Lutris and Heroic do it silently; Steam needs one click while Steam
   is closed (it overwrites its config on exit, so there is no way around that).
-- **Moving saves home**, optionally: a registry entry plus a symlink pointing
-  at the same folder in `~/Games/linux-prefix-hub/<Game>/` (configurable in
-  Settings). Games that respect Windows folders follow the registry, stubborn
-  ones hit the symlink. Idempotent and self-healing — a Proton update that
-  eats the symlink is repaired before the next launch.
+- **Moving game data home**, optionally: a registry entry plus a symlink
+  pointing at the same folder in `~/Games/linux-prefix-hub/<Game>/`
+  (configurable in Settings). Games that respect Windows folders follow the
+  registry, stubborn ones hit the symlink. Idempotent and self-healing — a
+  Proton update that eats the symlink is repaired before the next launch.
 - **Showing you the folder**, whether or not it can be moved. Source-engine
   games like Portal 2 save into their own install directory; those are found
   too, listed, and opened in your file manager on request — just not moved.
@@ -42,7 +42,7 @@ linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/linux-prefix-hub/
 - **Noticing new games** via a small background service, and telling you when
   a new version of this app is out.
 - **A window** (GTK 4 / libadwaita): your games as a list, one switch to
-  connect a game, one per save location to move it home. Everything the CLI
+  connect a game, one per storage location to move it home. Everything the CLI
   does, without the CLI.
 - **Self-contained AppImage** that installs itself, and updates itself via
   [Velopack](https://velopack.io) (or lets GearLever do it).
@@ -89,7 +89,7 @@ linux-prefix-hub --connect "Elden Ring"
 
 Then play once. `--status` will show what the game touched.
 
-### When something shows up that is not a save
+### When something shows up that is not worth keeping
 
 A session changes more than your progress: shader caches, crash dumps and log
 files churn on every launch. The known ones are filtered out already — Aim Lab
@@ -110,14 +110,14 @@ folders you have moved into your home folder, which are yours to undo with
 ## Looking a game up instead of playing it
 
 Not everything has to be learned the slow way — [PCGamingWiki][pcgw] already
-knows where thousands of games keep their saves:
+knows where thousands of games keep their data:
 
 ```bash
 linux-prefix-hub --lookup "Cyberpunk 2077"
 ```
 
 ```
-PCGamingWiki knows 2 save location(s) for Cyberpunk 2077.
+PCGamingWiki knows 2 storage location(s) for Cyberpunk 2077.
     [saves  ] Saved Games/CD Projekt Red/Cyberpunk 2077
     [config ] AppData/Local/CD Projekt Red/Cyberpunk 2077
     https://www.pcgamingwiki.com/wiki/Cyberpunk_2077
@@ -162,12 +162,12 @@ WINEPREFIX="$HOME/.wine-osu" "$HOME/.local/bin/linux-prefix-hub-wrapper" wine os
 ```
 
 Everything after that is the same as for any other game: play once, `--status`
-shows what it touched, `--redirect` moves the saves into your home folder.
+shows what it touched, `--redirect` moves the data into your home folder.
 
-## Moving saves into your home folder
+## Moving game data into your home folder
 
 ```bash
-linux-prefix-hub --redirect "Elden Ring"              # -> the save folder
+linux-prefix-hub --redirect "Elden Ring"              # -> the data folder
 linux-prefix-hub --redirect "Elden Ring" --target /mnt/ssd/Saves/Elden
 linux-prefix-hub --undo-redirect "Elden Ring"         # back into the game folder
 linux-prefix-hub --open "Elden Ring"                  # show it in the file manager
@@ -180,7 +180,7 @@ By default everything lands in `~/Games/linux-prefix-hub/<Game>/`. Change it in
 the window under **Settings**, or:
 
 ```bash
-linux-prefix-hub --set-save-folder /mnt/ssd/Saves
+linux-prefix-hub --set-data-folder /mnt/ssd/Saves
 ```
 
 Folders you already moved keep the path they were moved to; only later moves
@@ -227,11 +227,11 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --status                       learned storage locations
   --connect GAME                 install the launch hook
   --disconnect GAME              remove it again
-  --lookup GAME                  ask PCGamingWiki where it saves
+  --lookup GAME                  ask PCGamingWiki where it stores things
   --redirect GAME [--target P]   move storage into your home folder
   --undo-redirect GAME           move it back
-  --open GAME                    show its save folder (or the game folder)
-  --set-save-folder PATH         where moved saves are kept
+  --open GAME                    show its data folder (or the game folder)
+  --set-data-folder PATH         where moved game data is kept
   --add-game-folder PATH         also look for games there
   --forget-game-folder PATH      stop looking there
   --ignore-path PATH             never report that path as a storage location
@@ -254,7 +254,7 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
 ~/.config/linux-prefix-hub/                               config, database
 ~/.config/linux-prefix-hub/pcgamingwiki/                  cached lookups
 ~/.config/systemd/user/linux-prefix-hub-watcher.service
-~/Games/linux-prefix-hub/<Game>/                          where saves go
+~/Games/linux-prefix-hub/<Game>/                          moved game data
 ```
 
 ## Verified on real hardware

@@ -8,13 +8,14 @@ and `core.redirect` -- and adds nothing of its own beyond presentation. If a
 behaviour is missing here, it belongs in `core/` or `adapters/`, not in a
 widget callback.
 
-Vocabulary rule (CLAUDE.md #6): the user reads "game folder", "saves",
-"connect", "moved to". Never prefix, Wine or Proton.
+Vocabulary rule (CLAUDE.md #6): the user reads "game folder", "game data",
+"connect", "moved to". Never prefix, Wine or Proton -- and never "saves" for
+the whole of it, because half of what we find is settings and logs.
 
 Structure:
   LphApplication   -- Adw.Application, one window
   MainWindow       -- header + game list, everything else is a dialog
-  GameRow          -- one expander per game: connect switch + save locations
+  GameRow          -- one expander per game: connect switch + storage locations
 
 Anything that touches a disk goes through `tasks.run` so the window stays
 responsive; widgets are only ever touched from the main loop.
@@ -72,13 +73,14 @@ class GameRow(Adw.ExpanderRow):
         self._lookup = Gtk.Button(icon_name="system-search-symbolic",
                                   valign=Gtk.Align.CENTER)
         self._lookup.add_css_class("flat")
-        self._lookup.set_tooltip_text(_("Look up where this game saves"))
+        self._lookup.set_tooltip_text(
+            _("Look up where this game stores its data"))
         self._lookup.connect("clicked", self._on_lookup)
         self.add_suffix(self._lookup)
 
         self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._switch.set_tooltip_text(
-            _("Let this game report where it saves"))
+            _("Let this game report where it stores its data"))
         self._sync_switch(bool(game.get("managed")))
         self._switch.connect("state-set", self._on_toggled)
         self.add_suffix(self._switch)
@@ -117,7 +119,7 @@ class GameRow(Adw.ExpanderRow):
         locations = found[1].get("storage_locations", []) if found else []
         if not locations:
             hint = Adw.ActionRow(
-                title=esc(_("No save locations known yet")),
+                title=esc(_("No storage locations known yet")),
                 subtitle=esc(_("Connect the game and play it once -- or use "
                                "the search button to look it up.")))
             hint.set_activatable(False)
@@ -282,7 +284,7 @@ class FixedLocationRow(Adw.ActionRow):
         win_path = str(loc.get("win_path", ""))
         in_game_folder = loc.get("where") == "game_folder"
 
-        self.set_title(esc(_("Saves in {folder}",
+        self.set_title(esc(_("Game data in {folder}",
                              folder=win_path.split("/")[-1] or win_path)))
         self.set_subtitle(esc(
             _("in the game's own folder -- cannot be moved") if in_game_folder
@@ -304,13 +306,13 @@ class LocationRow(Adw.ActionRow):
         self._root = root
         self._syncing = False
 
-        self.set_title(esc(_("Saves in {folder}", folder=root)))
+        self.set_title(esc(_("Game data in {folder}", folder=root)))
         self.set_subtitle(esc(self._where(loc)))
 
         self.add_suffix(open_button(window, entry, loc))
 
         self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
-        self._switch.set_tooltip_text(_("Keep these saves in your home "
+        self._switch.set_tooltip_text(_("Keep this data in your home "
                                         "folder"))
         redirected = bool(loc.get("redirected"))
         self._sync_switch(redirected)
@@ -373,12 +375,12 @@ class SettingsDialog:
 
         page = Adw.PreferencesPage(title=_("Settings"))
         group = Adw.PreferencesGroup(
-            title=_("Where saves are kept"),
-            description=_("When you move a game's saves out of the game "
+            title=_("Where game data is kept"),
+            description=_("When you move a game's data out of the game "
                           "folder, they land here, one folder per game. "
                           "Folders you already moved stay where they are."))
 
-        self._row = Adw.ActionRow(title=esc(_("Save folder")))
+        self._row = Adw.ActionRow(title=esc(_("Data folder")))
         self._row.set_subtitle(esc(str(db.redirect_root())))
 
         choose = Gtk.Button(label=_("Choose..."), valign=Gtk.Align.CENTER)
@@ -401,9 +403,9 @@ class SettingsDialog:
         """The one switch that keeps the app entirely offline."""
         from ..core import pcgw
         group = Adw.PreferencesGroup(
-            title=_("Finding save locations"),
+            title=_("Finding storage locations"),
             description=_("Looking a game up asks PCGamingWiki where it "
-                          "keeps its saves, so you do not have to play it "
+                          "keeps its data, so you do not have to play it "
                           "first. It only happens when you ask for it."))
         row = Adw.ActionRow(title=esc(_("Allow looking games up online")))
         switch = Gtk.Switch(valign=Gtk.Align.CENTER,
@@ -434,7 +436,7 @@ class SettingsDialog:
         """None resets to the default."""
         db.set_config("redirect_root", path)
         self._row.set_subtitle(esc(str(db.redirect_root())))
-        self._window.toast(_("Saves will be kept in {path}.",
+        self._window.toast(_("Game data will be kept in {path}.",
                              path=str(db.redirect_root())))
 
     def _on_reset(self, *_a: Any) -> None:
@@ -443,10 +445,10 @@ class SettingsDialog:
     def _on_choose(self, *_a: Any) -> None:
         if not hasattr(Gtk, "FileDialog"):        # GTK < 4.10
             self._window.toast(_("Set it with: {cmd}",
-                                 cmd=f"{paths.APP_NAME} --set-save-folder "
+                                 cmd=f"{paths.APP_NAME} --set-data-folder "
                                      f"PATH"))
             return
-        dialog = Gtk.FileDialog(title=_("Choose the save folder"))
+        dialog = Gtk.FileDialog(title=_("Choose the data folder"))
         dialog.set_initial_folder(Gio.File.new_for_path(
             str(db.redirect_root().parent)))
 
@@ -470,7 +472,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._toasts = Adw.ToastOverlay()
         self._group = Adw.PreferencesGroup(
             title=_("Your games"),
-            description=_("Turn a game on so it can tell us where it saves."))
+            description=_("Turn a game on so it can tell us where it "
+                          "stores its data."))
 
         self._spinner = Adw.StatusPage(title=_("Looking for your games..."))
         self._spinner.set_child(Adw.Spinner() if hasattr(Adw, "Spinner")
@@ -690,8 +693,8 @@ class LphApplication(Adw.Application):
             application_icon=paths.APP_NAME,
             version=__version__,
             developer_name="tokajer",
-            comments=_("Find out where your games store their saves -- and "
-                       "keep those saves in your home folder."),
+            comments=_("Find out where your games store their data -- and "
+                       "keep that data in your home folder."),
             website="https://github.com/tokajer/linux-prefix-hub",
             copyright="© 2026 tokajer",
             license_type=Gtk.License.GPL_3_0)

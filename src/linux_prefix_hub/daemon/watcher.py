@@ -76,7 +76,7 @@ def _scan_once(known: set[str]) -> set[str]:
         if key in known:
             continue
         _notify(_("New game detected"),
-                _("{game} is installed. Open {app} to manage its saves.",
+                _("{game} is installed. Open {app} to manage its data.",
                   game=game.get("game_name", key), app=paths.APP_TITLE))
         newly.add(key)
     return newly

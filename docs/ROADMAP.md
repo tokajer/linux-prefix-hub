@@ -33,8 +33,8 @@ Legend: ✅ done · 🔨 next · 🔭 later
 `gui/app.py` + `gui/tasks.py`, sitting on the existing logic exactly as the
 split in `gui/welcome.py` intended.
 
-- Game list, a connect switch per game, a "keep saves in your home folder"
-  switch per save location.
+- Game list, a connect switch per game, a "keep this data in your home
+  folder" switch per storage location.
 - `HookResult.manual` (Steam running) becomes a dialog with a copy button.
 - **The GTK-bundling question resolved itself.** We bundle nothing: the
   AppImage's `--gui` hands over to a *system* interpreter that has PyGObject
@@ -145,6 +145,17 @@ The two decisions worth remembering:
 Open: `AppData/Local/Epic Games` (163 files after a Rocket League session) is
 the EOS SDK's cache and still counts as a location. Vendor SDK folders are the
 next candidates, but they are a guess in a way `dxvk` is not.
+
+**It also cost us a word.** Filtering out what is *not* a save made it obvious
+that the rest is not all saves either — settings, profiles and logs sit in the
+same folders. So the user-facing vocabulary dropped "saves"/"Spielstände" for
+the whole and now says **game data / Spieldaten** for the content and
+**storage location / Speicherort** for a place (CLAUDE.md rule 6). Every
+`_()` string, both catalogs, the desktop entry and the README moved with it;
+`location["type"] == "saves"` did not, because there it really is the type of
+one location. `--set-save-folder` still works — it is a flag in somebody's
+script, and a better word is not worth breaking it — but `--set-data-folder`
+is the name now.
 
 ## 🔭 Install-experience layer
 

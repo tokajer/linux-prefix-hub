@@ -343,7 +343,7 @@ def test_open_says_so_when_there_is_no_folder_at_all(monkeypatch, capsys):
 
 def test_save_folder_is_configurable(monkeypatch, capsys, isolated_home):
     from linux_prefix_hub.core import db, redirect
-    assert _run(monkeypatch, "--set-save-folder",
+    assert _run(monkeypatch, "--set-data-folder",
                 str(isolated_home / "Spielstaende")) == 0
     assert "Spielstaende" in capsys.readouterr().out
 

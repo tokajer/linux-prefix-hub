@@ -477,7 +477,7 @@ def _result(reason: str, game_name: str, page: str | None = None,
             cached: bool = False) -> dict[str, Any]:
     locations = locations or []
     messages = {
-        "": _("{site} knows {n} save location(s) for {game}.",
+        "": _("{site} knows {n} storage location(s) for {game}.",
               site=SITE_NAME, n=len(locations), game=game_name),
         "disabled": _("Looking things up online is switched off."),
         "offline": _("Could not reach {site}.", site=SITE_NAME),

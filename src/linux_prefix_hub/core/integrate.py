@@ -200,7 +200,7 @@ def install_desktop_entry() -> Path | None:
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={paths.APP_TITLE}\n"
-        "Comment=Manage where your games store saves\n"
+        "Comment=Manage where your games store their data\n"
         f"Exec={exec_line}\n"
         f"Icon={paths.APP_NAME}\n"
         "Categories=Game;Utility;\n"
