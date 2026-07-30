@@ -59,6 +59,12 @@ jobs:
         run: ./packaging/build-velopack.sh "${{ steps.version.outputs.version }}"
 
       - name: Smoke test the AppImage
+        env:
+          # Into the environment rather than inlined below: every line of a
+          # `run: |` block has to stay indented, and a long ${{ }} expression
+          # is what tempts you into a line continuation that silently ends
+          # the YAML block scalar.
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           export APPIMAGE_EXTRACT_AND_RUN=1
           APP="$(ls build/release/*.AppImage | head -n1)"
@@ -70,9 +76,11 @@ jobs:
           # `--update` compares against, so a wrong number here means every
           # user is told they are up to date forever.
           case "$BUILT" in
-            *" ${{ steps.version.outputs.version }}") ;;
-            *) echo "Built artifact says '$BUILT', tag says \
-${{ steps.version.outputs.version }}." >&2; exit 1 ;;
+            *" $VERSION") ;;
+            *)
+              echo "Built artifact says '$BUILT', tag says $VERSION." >&2
+              exit 1
+              ;;
           esac
           HOME="$(mktemp -d)" "$APP" --scan
 
