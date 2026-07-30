@@ -1,20 +1,23 @@
 name: Release AppImage
 
-# Tag a version and everything else happens here:
-#   git tag v0.2.0 && git push origin v0.2.0
+# Two ways in, same job:
 #
-# The job builds the AppImage, generates the .zsync file next to it and
-# publishes both plus SHA256SUMS as a GitHub release. That release is what
-# GearLever, AppImageUpdate and our own `--update` pull from -- the embedded
-# update information points at exactly this repo's "latest" release.
+#   * Actions -> "Release AppImage" -> "Run workflow", type the tag
+#     (v0.2.1). The tag does not have to exist -- it is created on the commit
+#     the workflow runs against, together with the release.
+#   * Or push a tag the usual way: git tag v0.2.1 && git push origin v0.2.1
+#
+# The job builds the AppImage and the Velopack update feed and publishes the
+# whole output directory as a GitHub release. That release is what GearLever
+# and our own `--update` pull from.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version to build (without the leading v)"
+      tag:
+        description: "Tag to release, e.g. v0.2.1 (created if it is new)"
         required: true
 
 permissions:
@@ -34,13 +37,20 @@ jobs:
       # reads it back out of the finished artifact.
       - name: Resolve version
         id: version
+        env:
+          # Typed into the form, so take it with or without the "v".
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          if [ -n "${INPUT_TAG}" ]; then
+            VERSION="${INPUT_TAG}"
           else
-            VERSION="${GITHUB_REF_NAME#v}"
+            VERSION="${GITHUB_REF_NAME}"
           fi
           VERSION="${VERSION#v}"
+          if [ -z "${VERSION}" ]; then
+            echo "No tag to release." >&2
+            exit 1
+          fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -92,15 +102,22 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
+          # --target creates the tag on this commit when it does not exist
+          # yet, which is what makes the "Run workflow" form enough on its
+          # own. A tag pushed by GITHUB_TOKEN does not start another run, so
+          # this cannot loop back into the `push: tags` trigger above.
+          #
           # The whole output directory is the update feed -- upload all of it,
           # not just the AppImage, or `--update` finds nothing.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" build/release/* --clobber
           else
             gh release create "$TAG" \
-              --title "Linux Prefix Hub ${{ steps.version.outputs.version }}" \
+              --target "$GITHUB_SHA" \
+              --title "Linux Prefix Hub $VERSION" \
               --generate-notes \
               build/release/*
           fi

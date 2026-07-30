@@ -8,7 +8,8 @@
 #   1. fetch a relocatable CPython AppImage (python-appimage) as the base
 #   2. unpack it into a plain directory and drop our package + the velopack
 #      wheel into its site-packages
-#   3. write the launcher that Velopack will call as the main executable
+#   3. write the launcher: a **compiled** main executable plus the shell
+#      script it hands over to -- see step 3 for why it cannot be the script
 #   4. hand the directory to `vpk pack`, which produces the .AppImage and the
 #      release feed that `core/updater.py` talks to
 #
@@ -16,7 +17,7 @@
 # single file -- that is why step 2 builds one instead of repacking an AppImage.
 #
 # Requirements:
-#   - curl
+#   - curl and a C compiler (see step 3 -- ~30 lines, no libraries)
 #   - the .NET SDK and the `vpk` tool:
 #       sudo dnf install dotnet-sdk-10.0        # Fedora/Nobara
 #       dotnet tool install -g vpk
@@ -24,9 +25,7 @@
 #   - keep the vpk version and the `velopack` wheel version in step (see
 #     pyproject `update` extra) aligned; Velopack asks for that explicitly.
 #
-# VERIFY-ON-DEVICE: this script has not been run end to end yet -- the machine
-# it was written on had no working .NET SDK. Specifically worth checking:
-#   - that `--mainExe` accepts our shell launcher (a shebang script, not ELF)
+# VERIFY-ON-DEVICE: still worth checking on a real release run:
 #   - the exact output file names vpk writes, for the release upload glob
 #   - whether GearLever accepts a vpk-built AppImage (it carries no zsync
 #     update information any more)
@@ -38,6 +37,8 @@ APP="LinuxPrefixHub"
 PACK_ID="${PACK_ID:-io.github.tokajer.LinuxPrefixHub}"
 GH_OWNER="${GH_OWNER:-tokajer}"
 GH_REPO="${GH_REPO:-linux-prefix-hub}"
+# ARCH picks the CPython base *and* has to match what $CC emits: vpk reads the
+# machine out of the main executable, so a cross-build needs a cross compiler.
 ARCH="${ARCH:-$(uname -m)}"
 PY_SERIES="${PY_SERIES:-3.12}"
 
@@ -124,19 +125,35 @@ find "${SITE_PACKAGES}/linux_prefix_hub" -name '__pycache__' -type d \
 printf 'version = "%s"\n__version__ = version\n' "${VERSION}" \
   > "${SITE_PACKAGES}/linux_prefix_hub/_version.py"
 
-# velopack ships an abi3 wheel (cp37-abi3), so the host pip can place it into
-# the bundled interpreter's site-packages without building anything.
-python3 -m pip install --quiet --upgrade --target "${SITE_PACKAGES}" \
-  --only-binary :all: --platform "manylinux2014_${ARCH}" \
-  --python-version "${PY_SERIES}" --implementation cp --abi abi3 \
-  "velopack>=1.2"
+# The bundle's *own* pip, not the host's. It resolves the wheel against the
+# interpreter that will actually run it, so none of --platform/--abi/
+# --python-version has to be guessed and kept in step with PY_SERIES -- and
+# the build machine no longer needs a pip at all (Fedora's python3 ships
+# without one).
+BUNDLED_PY="$(find "${PACKDIR}/opt" -maxdepth 3 -type f -name 'python3.*' \
+  -perm -u+x | head -n1)"
+if [ -z "${BUNDLED_PY}" ]; then
+  echo "No interpreter found in the base" >&2
+  exit 1
+fi
+"${BUNDLED_PY}" -m pip install --quiet --upgrade \
+  --target "${SITE_PACKAGES}" "velopack>=1.2"
 
 # --- 3. the launcher vpk calls --------------------------------------------
+# Two files, because vpk insists on the first one being a real binary: it
+# reads `--mainExe` with an ELF parser to work out the target architecture
+# (LinuxPackCommandRunner.GetMachineForBinary). Handing it the shell script
+# this used to be fails the build with "Given stream is not a proper ELF
+# file" -- that is what a shebang looks like to ELFSharp.
+#
+# So the main executable is a compiled shim whose whole job is to exec the
+# script next to it, and every bit of actual logic stays in the script.
 say "Writing the launcher"
-LAUNCHER="${PACKDIR}/${APP}"
+SH_NAME="${APP}.sh"
+LAUNCHER="${PACKDIR}/${SH_NAME}"
 cat > "${LAUNCHER}" << 'EOF'
 #!/usr/bin/env bash
-# Main executable of the Velopack package.
+# The Velopack package's launcher, reached through the compiled shim.
 #
 # Velopack replaces the whole directory on update, so this file is always in
 # step with the interpreter next to it. $APPIMAGE is set by the AppImage
@@ -169,6 +186,68 @@ esac
 exec "${PYTHON}" -m linux_prefix_hub "$@"
 EOF
 chmod 755 "${LAUNCHER}"
+
+CC="${CC:-$(command -v cc || command -v gcc || true)}"
+if [ -z "${CC}" ]; then
+  echo "No C compiler found; vpk needs an ELF main executable." >&2
+  echo "Install gcc/clang, or set CC=..." >&2
+  exit 1
+fi
+
+# The name is written into the source rather than repeated in it, so the two
+# cannot drift apart.
+CSRC="${BUILD}/launcher.c"
+printf '#define SHELL_LAUNCHER "%s"\n' "${SH_NAME}" > "${CSRC}"
+cat >> "${CSRC}" << 'EOF'
+/* Main executable of the Velopack package: exec the script next to me.
+ *
+ * It exists because vpk parses this file as ELF (see the build script). Keep
+ * it free of logic -- everything a user could ever need to debug belongs in
+ * the shell script, where they can read it.
+ *
+ * /proc/self/exe rather than argv[0]: the AppImage mounts itself somewhere
+ * new on every start, and only the kernel knows where that is.
+ */
+#include <libgen.h>
+#include <limits.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main(int argc, char **argv)
+{
+    char self[PATH_MAX];
+    char script[PATH_MAX];
+    ssize_t len;
+
+    (void) argc;
+    len = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (len < 0) {
+        perror("LinuxPrefixHub: cannot locate myself");
+        return 127;
+    }
+    self[len] = '\0';
+
+    if (snprintf(script, sizeof(script), "%s/%s", dirname(self),
+                 SHELL_LAUNCHER) >= (int) sizeof(script)) {
+        fprintf(stderr, "LinuxPrefixHub: path too long\n");
+        return 127;
+    }
+
+    argv[0] = script;
+    execv(script, argv);
+    perror(script);
+    return 127;
+}
+EOF
+
+MAIN_EXE="${PACKDIR}/${APP}"
+"${CC}" -O2 -s -o "${MAIN_EXE}" "${CSRC}"
+chmod 755 "${MAIN_EXE}"
+# Fail here, not three minutes later inside vpk, if this is not what it wants.
+head -c 4 "${MAIN_EXE}" | grep -q 'ELF' || {
+  echo "The main executable did not come out as ELF." >&2
+  exit 1
+}
 
 ICON="${ROOT}/packaging/linux-prefix-hub.png"
 [ -f "${ICON}" ] || python3 "${ROOT}/packaging/make-icon.py" "${ICON}"

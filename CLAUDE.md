@@ -16,7 +16,7 @@ see the words prefix, Wine or `steamuser`.
 PYTHONPATH=src python -m linux_prefix_hub --scan
 HOME=/tmp/x PYTHONPATH=src python -m linux_prefix_hub   # setup flow, safely
 PYTHONPATH=src /usr/bin/python3 -m linux_prefix_hub --gui   # needs system gi
-./packaging/build-velopack.sh            # release build; needs .NET SDK + vpk
+./packaging/build-velopack.sh            # release build; needs vpk (.NET) + cc
 ./packaging/build-appimage.sh            # local test build, cannot self-update
 ```
 

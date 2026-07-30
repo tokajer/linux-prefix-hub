@@ -531,8 +531,11 @@ it disabled without a second code path.
 - **`build-velopack.sh`** — the release build. Downloads a relocatable
   CPython (python-appimage), unpacks it into a plain directory, injects our
   package plus the `velopack` wheel, writes the launcher and hands the
-  directory to `vpk pack`. Needs the .NET SDK. **VERIFY-ON-DEVICE:** never run
-  end to end yet.
+  directory to `vpk pack`. Needs the .NET SDK **and a C compiler**: `vpk`
+  parses `--mainExe` as ELF to find the target machine, so the main
+  executable is a compiled shim that execs `LinuxPrefixHub.sh` next to it.
+  A shell script there fails the build with "Given stream is not a proper
+  ELF file".
 - **`build-appimage.sh`** — local test build for machines without .NET.
   Deliberately ships no `velopack` wheel, so it cannot self-update and stays
   quiet. Never publish its output.

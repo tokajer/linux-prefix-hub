@@ -307,10 +307,12 @@ Marked in the code at the relevant spots:
 5. **Hand-made game folders** — `DEFAULT_ROOTS` in `adapters/generic.py` is a
    "where do people keep these" list and cannot be complete. Check it against
    your own setup; anything missing is one `--add-game-folder` away.
-6. **The Velopack build** (`packaging/build-velopack.sh`) — never run end to
-   end: the machine it was written on had no working .NET SDK. Check that
-   `--mainExe` accepts a shell launcher, what file names `vpk` emits, and
-   whether GearLever still accepts a vpk-built AppImage.
+6. **The Velopack build** (`packaging/build-velopack.sh`) — the packaging up
+   to `vpk` is verified, `vpk` itself only in CI. `--mainExe` is answered:
+   it must be an **ELF binary**, not a shell script (`vpk` reads the machine
+   out of it), which is why there is a small compiled shim next to the
+   launcher script. Still open: what file names `vpk` emits, for the release
+   upload glob, and whether GearLever accepts a vpk-built AppImage.
 
 ## Documentation
 

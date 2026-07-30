@@ -4,6 +4,11 @@ One tag, everything else is automatic. Releases are built and updated by
 **Velopack** — it owns the packaging *and* the update feed, so the two can
 never drift apart.
 
+**From GitHub, without touching a terminal:** Actions → *Release AppImage* →
+*Run workflow*, type the tag (`v0.1.0`). The tag does not have to exist yet —
+it is created on the commit the workflow runs against, together with the
+release. Pushing a tag works just as well:
+
 ```bash
 git tag v0.1.0
 git push origin main v0.1.0
@@ -32,12 +37,13 @@ disagree with the tag:
 Step 5 matters: the directory *is* the update feed. Uploading only the
 `.AppImage` leaves `--update` unable to find anything.
 
-You can also trigger it by hand ("Run workflow" → version) — useful for
-re-cutting a release without moving the tag.
+Re-running it for a tag that already has a release uploads over it
+(`--clobber`) instead of failing.
 
 ## Build requirements
 
-`vpk` is a .NET tool, so a release build needs the .NET SDK:
+`vpk` is a .NET tool, so a release build needs the .NET SDK (plus `cc`, for
+the ~30-line launcher shim — `vpk` insists on an ELF `--mainExe`):
 
 ```bash
 sudo dnf install dotnet-sdk-10.0     # Fedora/Nobara

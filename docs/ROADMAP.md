@@ -52,8 +52,20 @@ Still open on the GUI:
 ## ✅ Velopack updater
 
 `core/updater.py` talks to the Velopack SDK, `packaging/build-velopack.sh`
-builds the release. The old zsync/GitHub-API path is gone. **Not yet run end to
-end** — see the VERIFY-ON-DEVICE note in the README.
+builds the release. The old zsync/GitHub-API path is gone.
+
+The first real CI run answered the open question in that script: **`--mainExe`
+has to be an ELF binary.** `vpk` reads the machine straight out of it
+(`LinuxPackCommandRunner.GetMachineForBinary`), so a shebang script fails the
+build with "Given stream is not a proper ELF file". The main executable is now
+a ~30-line compiled shim that execs `LinuxPrefixHub.sh` beside it — all logic
+stays in the script, where it can be read. Same run, second finding: the
+bundled CPython brings its own pip, so the wheel is installed with *that* one
+instead of the host's, and no `--platform`/`--abi` has to be kept in step with
+`PY_SERIES` (Fedora's `python3` has no pip at all).
+
+`vpk` itself still only runs in CI — see the VERIFY-ON-DEVICE note in the
+README for what that leaves open.
 
 ## ✅ Generic game folders (`adapters/generic.py`)
 
@@ -157,17 +169,7 @@ one location. `--set-save-folder` still works — it is a flag in somebody's
 script, and a better word is not worth breaking it — but `--set-data-folder`
 is the name now.
 
-## 🔭 Install-experience layer
 
-Mostly falls out of the watcher and discovery that already exist:
-
-- "Newly installed" greeting with a connect offer (uses the watcher).
-- First-launch preparation: create the prefix in a controlled way
-  (`wineboot`-style), set the redirection *before* the user really plays.
-- Optional: set the Proton version per game, suggest ProtonDB tweaks.
-
-**Honest limit:** Steam's own install dialog is untouchable, and writing VDF
-needs Steam closed.
 
 ## 🔭 Watch for first launch
 
@@ -175,10 +177,7 @@ The watcher can also react to `compatdata/<appid>/pfx` appearing, which is the
 safe moment to apply a redirection the user asked for while the game was never
 started.
 
-## 🔭 More sources
 
-- **Bottles**: show as "detected, not managed"; full management only on
-  request (the gaming overlap is small).
 
 ## 🔭 Backlog
 
@@ -189,3 +188,18 @@ started.
 - **More languages**: one JSON file each; the machinery is done.
 - **aarch64 AppImage**: the build script already takes `ARCH`; add a matrix
   entry to `release.yml` once there is hardware to test on.
+- **Bottles**: show as "detected, not managed"; full management only on
+  request (the gaming overlap is small).
+
+
+## 🔭 Install-experience layer (also backlog)
+
+Mostly falls out of the watcher and discovery that already exist:
+
+- "Newly installed" greeting with a connect offer (uses the watcher).
+- First-launch preparation: create the prefix in a controlled way
+  (`wineboot`-style), set the redirection *before* the user really plays.
+- Optional: set the Proton version per game, suggest ProtonDB tweaks.
+
+**Honest limit:** Steam's own install dialog is untouchable, and writing VDF
+needs Steam closed.
