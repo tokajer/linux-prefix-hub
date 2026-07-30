@@ -55,7 +55,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `adapters/generic.py` | Hand-rolled setups: discovery by shape alone, path = id, no config to hook — the user gets a command. Runs **last**, skips what the others claim |
 | `daemon/watcher.py` | inotify on steamapps + periodic rescan; new-game and update notifications |
 | `gui/welcome.py` | Terminal setup flow. Logic split from presentation, shared with the GTK UI |
-| `gui/app.py` | GTK4/libadwaita window: game list, connect switch, move-home switch. Presentation only |
+| `gui/app.py` | GTK4/libadwaita window: game list, connect switch, lookup button, game-folder row, move-home switch. Presentation only |
 | `gui/tasks.py` | One function: run blocking work off the GTK main loop, land the result via `idle_add` |
 
 ## Rules that are easy to break

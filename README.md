@@ -36,6 +36,9 @@ linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/linux-prefix-hub/
 - **Showing you the folder**, whether or not it can be moved. Source-engine
   games like Portal 2 save into their own install directory; those are found
   too, listed, and opened in your file manager on request — just not moved.
+  The game's own folder is listed the same way, with its full path, from the
+  moment the game has been started once — in the window and in `--status`,
+  and `--open` takes you there when nothing else is known yet.
 - **Noticing new games** via a small background service, and telling you when
   a new version of this app is out.
 - **A window** (GTK 4 / libadwaita): your games as a list, one switch to
@@ -209,7 +212,7 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --lookup GAME                  ask PCGamingWiki where it saves
   --redirect GAME [--target P]   move storage into your home folder
   --undo-redirect GAME           move it back
-  --open GAME                    show its save folder in the file manager
+  --open GAME                    show its save folder (or the game folder)
   --set-save-folder PATH         where moved saves are kept
   --add-game-folder PATH         also look for games there
   --forget-game-folder PATH      stop looking there

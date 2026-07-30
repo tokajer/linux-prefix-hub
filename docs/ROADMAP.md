@@ -133,6 +133,10 @@ started.
 - **Bottles**: show as "detected, not managed"; full management only on
   request (the gaming overlap is small).
 
+## 🔭 More granular file filters.
+
+- **dxvk.bin Files**: we detect all file changes but for example in aimlab its a temp tirectory for dxvk.bin files. Should not be included.
+
 ## 🔭 Backlog
 
 - **Steam Cloud collision guard**: warn when redirected saves could clash with

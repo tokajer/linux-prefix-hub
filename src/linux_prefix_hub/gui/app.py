@@ -18,6 +18,7 @@ responsive; widgets are only ever touched from the main loop.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import gi
@@ -104,6 +105,10 @@ class GameRow(Adw.ExpanderRow):
     def _fill_locations(self) -> None:
         for row in list(self._rows()):
             self.remove(row)
+
+        folder = self._game.get("prefix_path")
+        if folder:
+            self.add_row(GameFolderRow(self._window, str(folder)))
 
         found = self._entry()
         locations = found[1].get("storage_locations", []) if found else []
@@ -209,9 +214,8 @@ class GameRow(Adw.ExpanderRow):
         tasks.run(work, done)
 
 
-def open_button(window: MainWindow, entry: dict[str, Any],
-                loc: dict[str, Any]) -> Gtk.Button:
-    """A button that shows this location in the file manager.
+def path_button(window: MainWindow, path: Any) -> Gtk.Button:
+    """A button that shows one folder in the file manager.
 
     Insensitive when the folder is not there (yet) -- a button that does
     nothing when clicked is worse than one that is visibly unavailable.
@@ -219,8 +223,7 @@ def open_button(window: MainWindow, entry: dict[str, Any],
     button = Gtk.Button(icon_name="folder-open-symbolic",
                         valign=Gtk.Align.CENTER)
     button.add_css_class("flat")
-    path = redirect.location_path(entry, loc)
-    if path is None or not path.is_dir():
+    if path is None or not Path(path).is_dir():
         button.set_sensitive(False)
         button.set_tooltip_text(_("This folder does not exist (yet)"))
         return button
@@ -233,6 +236,31 @@ def open_button(window: MainWindow, entry: dict[str, Any],
 
     button.connect("clicked", on_click)
     return button
+
+
+def open_button(window: MainWindow, entry: dict[str, Any],
+                loc: dict[str, Any]) -> Gtk.Button:
+    """The same button, for a storage location."""
+    return path_button(window, redirect.location_path(entry, loc))
+
+
+class GameFolderRow(Adw.ActionRow):
+    """The folder the game itself lives in.
+
+    Worth a row of its own: it is the only folder that exists before anything
+    has been learned, and "where is this thing actually installed" is a
+    question people ask long before they ask about saves. The path is
+    selectable where libadwaita can do that, so it can be copied out.
+    """
+
+    def __init__(self, window: MainWindow, path: str) -> None:
+        super().__init__()
+        self.set_title(esc(_("Game folder")))
+        self.set_subtitle(esc(path))
+        if hasattr(self, "set_subtitle_selectable"):   # libadwaita 1.3+
+            self.set_subtitle_selectable(True)
+        self.add_suffix(path_button(window, path))
+        self.set_activatable(False)
 
 
 class FixedLocationRow(Adw.ActionRow):

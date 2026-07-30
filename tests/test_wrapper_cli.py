@@ -234,6 +234,46 @@ def test_redirect_explains_why_it_cannot_move_the_game_folder(monkeypatch,
     assert "its own folder" in out and "--open" in out
 
 
+def test_open_falls_back_to_the_game_folder(monkeypatch, capsys, fake_prefix):
+    """Nothing learned yet -- then the game folder is the answer."""
+    from linux_prefix_hub.adapters import base
+    from linux_prefix_hub.core import desktop
+    opened: list[str] = []
+    monkeypatch.setattr(desktop, "open_folder",
+                        lambda p: opened.append(str(p)) or True)
+    monkeypatch.setattr(base, "iter_games", lambda sources=None: iter([
+        {"source": "steam", "app_id": "620", "game_name": "Portal 2",
+         "prefix_path": str(fake_prefix), "user_dir": "steamuser"}]))
+
+    assert _run(monkeypatch, "--open", "Portal 2") == 0
+    assert opened == [str(fake_prefix)]
+    assert "Portal 2" not in capsys.readouterr().out    # the path is printed
+
+
+def test_open_prefers_the_save_locations(monkeypatch, capsys, fake_prefix):
+    """The game folder is the fallback, not the answer."""
+    from linux_prefix_hub.core import db, desktop
+    db.upsert_prefix({
+        "source": "steam", "app_id": "620", "game_name": "Portal 2",
+        "prefix_path": str(fake_prefix), "user_dir": "steamuser",
+        "storage_locations": [{"type": "saves", "where": "prefix",
+                               "win_path": "Documents"}],
+    })
+    opened: list[str] = []
+    monkeypatch.setattr(desktop, "open_folder",
+                        lambda p: opened.append(str(p)) or True)
+
+    assert _run(monkeypatch, "--open", "Portal 2") == 0
+    assert opened == [str(fake_prefix / "drive_c/users/steamuser/Documents")]
+
+
+def test_open_says_so_when_there_is_no_folder_at_all(monkeypatch, capsys):
+    from linux_prefix_hub.adapters import base
+    monkeypatch.setattr(base, "iter_games", lambda sources=None: iter([]))
+    assert _run(monkeypatch, "--open", "Nothing") == 1
+    assert "not in the list yet" in capsys.readouterr().out
+
+
 def test_save_folder_is_configurable(monkeypatch, capsys, isolated_home):
     from linux_prefix_hub.core import db, redirect
     assert _run(monkeypatch, "--set-save-folder",

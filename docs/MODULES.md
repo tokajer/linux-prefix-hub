@@ -20,6 +20,7 @@ command).
 | `--scan`, `--status` | listing | user |
 | `--connect`, `--disconnect` | adapter hook | user |
 | `--lookup` | `core.pcgw.lookup_and_store` | user |
+| `--open` | `core.desktop.open_folder` | user |
 | `--redirect`, `--undo-redirect` | `core.redirect` | user |
 | `--check-update`, `--update` | `core.updater` | user |
 | `--lang`, `--set-language` | `core.i18n` | user |
@@ -447,8 +448,15 @@ presentation differs.
 
 ## `gui/app.py` — the window (GTK 4 / libadwaita)
 
-`main()`, `LphApplication`, `MainWindow`, `GameRow`, `LocationRow`,
-`FixedLocationRow`, `SettingsDialog`, `open_button()`, `esc()`.
+`main()`, `LphApplication`, `MainWindow`, `GameRow`, `GameFolderRow`,
+`LocationRow`, `FixedLocationRow`, `SettingsDialog`, `path_button()`,
+`open_button()`, `esc()`.
+
+`GameFolderRow` is the first row of every game that has been started once: the
+folder the game itself lives in, with the path selectable (libadwaita 1.3+,
+feature-detected) and the same open button as everything else. It is the only
+folder that exists before anything has been learned, so it is shown even when
+there is nothing else to show.
 
 One `Adw.ExpanderRow` per game: a switch that calls the same
 `adapter.connect()` the CLI uses, a search button that calls
