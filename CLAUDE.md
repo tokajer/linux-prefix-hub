@@ -39,6 +39,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `core/i18n.py` | `_()`; English source strings, `locales/de.json` catalog, `LPH_LANG` > config > `LANG` |
 | `core/db.py` | `prefixes.json`. `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS` |
 | `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); pending snapshots for the 2-process hook flow |
+| `core/pcgw.py` | PCGamingWiki lookup: article → `{{Game data/…}}` → our locations. Optional, cached, **never on the launch path** (the wrapper reads the cache only) |
 | `core/desktop.py` | Hand a folder to the user's file manager. `xdg-open` first |
 | `core/wrapper.py` | The launch hook, both shapes (wrap and pre/post). Must never break a launch |
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
@@ -51,6 +52,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `adapters/steam.py` | Multi-library discovery; hook = launch options (needs Steam closed, else manual) |
 | `adapters/lutris.py` | pga.db + YAML discovery; hook = `prelaunch_command`/`postexit_command` |
 | `adapters/heroic.py` | GamesConfig JSON discovery; hook = `wrapperOptions` (wrap shape, like Steam) |
+| `adapters/generic.py` | Hand-rolled setups: discovery by shape alone, path = id, no config to hook — the user gets a command. Runs **last**, skips what the others claim |
 | `daemon/watcher.py` | inotify on steamapps + periodic rescan; new-game and update notifications |
 | `gui/welcome.py` | Terminal setup flow. Logic split from presentation, shared with the GTK UI |
 | `gui/app.py` | GTK4/libadwaita window: game list, connect switch, move-home switch. Presentation only |
@@ -69,9 +71,15 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
    wrapped in try/except and the game's exit code is passed through — *and*
    the game gets the environment it would have had without us
    (`wrapper.game_env`). The AppImage's `PYTHONHOME`/`PYTHONPATH` leaking into
-   the child kills Proton, which is a Python program itself.
+   the child kills Proton, which is a Python program itself. **No network on
+   that path either** — `pcgw` is asked only via its on-disk cache.
 4. **Discovery is defensive.** One broken manifest/config skips that entry, it
    never aborts the scan (`base.iter_games` isolates whole adapters too).
+   The same care applies to **every process we start**: the game
+   (`wrapper.game_env`) and the file manager (`desktop._child_env`) get the
+   environment they would have had without us. A file manager outlives us and
+   passes what we leak to everything the user opens from it — that is how a
+   stray `LPH_GUI_REEXEC` once stopped the window from ever appearing.
 5. **User-visible strings go through `_()` in English**, then into
    `locales/de.json` with identical `{placeholders}` (a test enforces that).
 6. **No Wine/prefix/Proton vocabulary in user-visible text** — "game folder",
@@ -85,13 +93,15 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 
 ## Adding a launcher
 
-New file in `adapters/`, add its name to `base.SOURCES`, implement `SOURCE`,
-`iter_games`, `context_from_env`, `connect`, `disconnect`. Nothing in `core/`
-should need to change — if it does, that is a design smell worth raising.
+New file in `adapters/`, add its name to `base.SOURCES` **before `generic`**
+(it claims every game folder nobody else does, so it stays last), implement
+`SOURCE`, `iter_games`, `context_from_env`, `connect`, `disconnect`. Nothing in
+`core/` should need to change — if it does, that is a design smell worth
+raising.
 
 ## State on disk
 
-`~/.config/linux-prefix-hub/{config.json,prefixes.json,known_games.json,snapshots/}`,
+`~/.config/linux-prefix-hub/{config.json,prefixes.json,known_games.json,snapshots/,pcgamingwiki/}`,
 `~/.local/share/linux-prefix-hub/LinuxPrefixHub.AppImage`,
 `~/.local/bin/linux-prefix-hub-{wrapper,hook,daemon}`,
 `~/.config/systemd/user/linux-prefix-hub-watcher.service`.

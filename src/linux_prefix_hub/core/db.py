@@ -3,8 +3,8 @@
 Data model per game/prefix:
 {
   "<fingerprint>": {
-    "source": "steam" | "lutris" | "heroic",
-    "app_id": "1091500",            # source-specific id (Steam appid, ...)
+    "source": "steam" | "lutris" | "heroic" | "generic",
+    "app_id": "1091500",            # source-specific id (appid, slug, path)
     "game_name": "Cyberpunk 2077",
     "prefix_path": "/.../compatdata/1091500/pfx",
     "user_dir": "steamuser",        # folder inside drive_c/users
@@ -97,6 +97,36 @@ def redirect_root() -> Path:
     """Where moved save folders end up: one directory per game below this."""
     d = load_config().get("redirect_root")
     return Path(os.path.expanduser(d)) if d else paths.DEFAULT_REDIRECT_ROOT
+
+
+def extra_game_folders() -> list[str]:
+    """Folders the user told us to look in for hand-installed games.
+
+    The generic adapter knows the usual places; this is for everything else,
+    and a hand-rolled setup can live anywhere.
+    """
+    value = load_config().get("game_folders")
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def add_game_folder(path: str | Path) -> bool:
+    """Remember a folder to look in. False if it was already remembered."""
+    folder = os.path.abspath(os.path.expanduser(str(path)))
+    folders = extra_game_folders()
+    if folder in folders:
+        return False
+    set_config("game_folders", folders + [folder])
+    return True
+
+
+def forget_game_folder(path: str | Path) -> bool:
+    """Drop a folder again. False if it was not in the list."""
+    folder = os.path.abspath(os.path.expanduser(str(path)))
+    folders = extra_game_folders()
+    if folder not in folders:
+        return False
+    set_config("game_folders", [f for f in folders if f != folder])
+    return True
 
 
 def location_key(loc: dict[str, Any]) -> tuple[str, str]:

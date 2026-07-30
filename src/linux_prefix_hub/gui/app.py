@@ -65,6 +65,13 @@ class GameRow(Adw.ExpanderRow):
         self.set_title(esc(self._name))
         self.set_subtitle(esc(self._subtitle()))
 
+        self._lookup = Gtk.Button(icon_name="system-search-symbolic",
+                                  valign=Gtk.Align.CENTER)
+        self._lookup.add_css_class("flat")
+        self._lookup.set_tooltip_text(_("Look up where this game saves"))
+        self._lookup.connect("clicked", self._on_lookup)
+        self.add_suffix(self._lookup)
+
         self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._switch.set_tooltip_text(
             _("Let this game report where it saves"))
@@ -76,7 +83,8 @@ class GameRow(Adw.ExpanderRow):
 
     # --- presentation ----------------------------------------------------
     def _subtitle(self) -> str:
-        source = str(self._game.get("source", ""))
+        from ..adapters import base
+        source = base.source_label(str(self._game.get("source", "")))
         if not self._game.get("installed"):
             return _("{source} - not fully installed yet", source=source)
         if not self._game.get("prefix_path"):
@@ -102,8 +110,8 @@ class GameRow(Adw.ExpanderRow):
         if not locations:
             hint = Adw.ActionRow(
                 title=esc(_("No save locations known yet")),
-                subtitle=esc(_("Connect the game and play it once -- then "
-                               "its save locations show up here.")))
+                subtitle=esc(_("Connect the game and play it once -- or use "
+                               "the search button to look it up.")))
             hint.set_activatable(False)
             self.add_row(hint)
             return
@@ -172,6 +180,33 @@ class GameRow(Adw.ExpanderRow):
         tasks.run(work, done)
         # We drive the visual state ourselves once the work is finished.
         return True
+
+    def _on_lookup(self, *_args: Any) -> None:
+        """Ask PCGamingWiki where this game saves. Network, so off the loop."""
+        self._lookup.set_sensitive(False)
+        game = dict(self._game)
+
+        def work() -> Any:
+            from ..core import pcgw
+            return pcgw.lookup_and_store(game)
+
+        def done(result: Any, error: Exception | None) -> None:
+            self._lookup.set_sensitive(True)
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            message = str(result["message"])
+            if result["locations"] and not result.get("stored"):
+                # Known, but nowhere to keep it yet: the DB is keyed by the
+                # game folder, which only exists once the game has run.
+                message += " " + _("Start the game once -- then they show "
+                                   "up here.")
+            self._window.toast(message)
+            if result.get("stored"):
+                self._fill_locations()
+
+        tasks.run(work, done)
 
 
 def open_button(window: MainWindow, entry: dict[str, Any],
@@ -328,7 +363,29 @@ class SettingsDialog:
 
         group.add(self._row)
         page.add(group)
+        page.add(self._online_group())
         self._dialog.add(page)
+
+    def _online_group(self) -> Adw.PreferencesGroup:
+        """The one switch that keeps the app entirely offline."""
+        from ..core import pcgw
+        group = Adw.PreferencesGroup(
+            title=_("Finding save locations"),
+            description=_("Looking a game up asks PCGamingWiki where it "
+                          "keeps its saves, so you do not have to play it "
+                          "first. It only happens when you ask for it."))
+        row = Adw.ActionRow(title=esc(_("Allow looking games up online")))
+        switch = Gtk.Switch(valign=Gtk.Align.CENTER,
+                            active=pcgw.enabled())
+        switch.connect("state-set", self._on_online)
+        row.add_suffix(switch)
+        row.set_activatable(False)
+        group.add(row)
+        return group
+
+    def _on_online(self, _switch: Gtk.Switch, wanted: bool) -> bool:
+        db.set_config("online_lookup", bool(wanted))
+        return False              # let the switch draw the new state itself
 
     def present(self) -> None:
         if hasattr(self._dialog, "present"):
@@ -433,8 +490,9 @@ class MainWindow(Adw.ApplicationWindow):
         page = Adw.StatusPage(
             icon_name="applications-games-symbolic",
             title=_("No games found"),
-            description=_("We look for games from Steam, Lutris and Heroic. "
-                          "Install one, then press refresh."))
+            description=_("We look for games from Steam, Lutris and Heroic, "
+                          "and for game folders you set up yourself. Install "
+                          "one, then press refresh."))
         return page
 
     # --- data ------------------------------------------------------------
@@ -473,8 +531,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._toasts.add_toast(Adw.Toast(title=esc(message), timeout=4))
 
     def show_manual_step(self, game: str, result: Any) -> None:
-        """Steam's launch options cannot be written while Steam runs."""
-        options = str(result["detail"].get("options", ""))
+        """One step only the user can take, with the text to copy.
+
+        Two cases: Steam's launch options (they cannot be written while Steam
+        runs) and a hand-installed game (there is no launcher config at all).
+        Each adapter names its detail after what the string *is*, so look for
+        both rather than inventing a shared name for two different things.
+        """
+        detail = result["detail"]
+        options = next((str(detail[key]) for key in ("launch_options",
+                                                     "command")
+                        if detail.get(key)), "")
         dialog = Adw.AlertDialog(heading=esc(game),
                                  body=esc(result.message))
         dialog.add_response("close", _("Close"))

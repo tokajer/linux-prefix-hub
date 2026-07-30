@@ -51,6 +51,13 @@ the core which game is starting.
 | Steam | VDF (`appmanifest`, `libraryfolders`, `localconfig`) | `%command%` wrapper in launch options | only while Steam runs |
 | Lutris | YAML (`~/.config/lutris/games/*.yml`) | `prelaunch_command` / `postexit_command` | no |
 | Heroic | JSON (`~/.config/heroic/GamesConfig/*.json`) | `wrapperOptions` | no |
+| generic | none — the folder itself | the user's own launch command | always |
+
+The generic source is the pattern taken to its end: no config to read, no
+config to write, just `base.is_prefix` and the user. It runs last and skips
+every folder an adapter above it claims, because a Lutris prefix in
+`~/Games/<slug>` is shaped exactly like a hand-made one. Its `connect` can only
+hand over a command — see `docs/MODULES.md`.
 
 Steam is the awkward one: it keeps its config in memory and writes it out when
 it exits, so anything we write while it runs is lost. With Steam closed we
@@ -79,8 +86,9 @@ Noise is filtered out explicitly (`snapshot.IGNORE_FRAGMENTS`): `Temp`,
 `CrashDumps`, shader caches, `INetCache`. Without that, every game "saves" to
 half a dozen Windows scratch directories.
 
-Later this can be complemented by **PCGamingWiki** data for instant hits
-without playing.
+It is complemented by **PCGamingWiki** (`core/pcgw.py`) for instant hits
+without playing — see below. The diff stays the source of truth: it is the
+only one that can see what a game *actually* does on this machine.
 
 **Install-folder special case:** if a game writes into its own
 `steamapps/common/<Game>/`, that is *not* a shell folder → not redirectable via
@@ -169,6 +177,36 @@ us to move. Everything else is observation. If any of it throws, the game
 still launches and its exit code is passed through — a save-game tracker that
 stops people from playing has failed at its job.
 
+Step 5 also reads what a lookup already found, **from disk only**. Nothing on
+this path waits on a network.
+
+---
+
+## The PCGamingWiki lookup
+
+The diff needs a play session before it knows anything. PCGamingWiki knows
+already, for thousands of games, so `core/pcgw.py` reads the
+`{{Game data/saves|…}}` rows of an article and maps them into the same two
+spaces the diff uses. Same shape, same DB, one extra `detected_by` value.
+
+Three constraints follow from it being someone else's server:
+
+1. **It never runs on its own.** A lookup is a button and a CLI flag. The
+   launch hook reads the cache and nothing else — a game that just exited is
+   not the moment to wait on a HTTP request, and rule 3 in `CLAUDE.md` covers
+   the network too.
+2. **The answer is cached**, hits for a month and misses for a day.
+   *Unreachable* is not cached at all: "there is no article" is a fact about
+   the game, "there is no network" is a fact about us.
+3. **A wrong article is worse than no article.** A Steam appid is an exact key
+   (their Cargo table); a name is not, so the search fallback refuses anything
+   that is not clearly the same game — otherwise we would hand the user
+   another game's save folders and call it knowledge.
+
+What the wiki says does not overrule what the diff *saw*: the diff wins on
+file counts and provenance, the wiki wins on `type`, which is the one thing a
+path heuristic can only guess at.
+
 ---
 
 ## New-game detection
@@ -202,8 +240,10 @@ user-controlled fields belong in `USER_FIELDS` / `LOCATION_USER_FIELDS` in
 Every prefix is identified by `sha256(realpath(prefix))[:16]` (`db.fingerprint`).
 It therefore does not matter *who* created it — Steam, Lutris, Heroic or a
 hand-rolled Wine setup. A prefix is always recognisable by `system.reg` +
-`user.reg` + `drive_c/` (`base.is_prefix`), which is the universal anchor for a
-future generic "find all prefixes" scan.
+`user.reg` + `drive_c/` (`base.is_prefix`), and `adapters/generic.py` is built
+on nothing but that: a game folder no launcher knows about is still a game
+folder, gets a fingerprint like every other one, and everything downstream
+(snapshot diff, redirection, `--open`) works on it unchanged.
 
 ---
 

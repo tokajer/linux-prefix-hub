@@ -1,6 +1,7 @@
 """The launch hook and the command line -- the two things users touch."""
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -376,12 +377,31 @@ def test_handover_env_drops_pythonhome(monkeypatch):
     assert env["PYTHONPATH"] != "/appimage/usr/lib/python"
     assert env["PYTHONPATH"].endswith("src") or "linux_prefix_hub" not in \
         env["PYTHONPATH"].rsplit("/", 1)[-1]
-    assert env[m.REEXEC_FLAG] == "1"
+    assert env[m.REEXEC_FLAG] == str(os.getpid())
 
 
 def test_reexec_does_not_loop(monkeypatch):
+    """`execve` keeps the pid, so the flag still applies to the handover."""
     from linux_prefix_hub import __main__ as m
-    monkeypatch.setenv(m.REEXEC_FLAG, "1")
+    monkeypatch.setenv(m.REEXEC_FLAG, str(os.getpid()))
     monkeypatch.setattr(m, "_system_python_with_gtk",
                         lambda env: pytest.fail("looked again after handover"))
     assert m._reexec_gui() == 1
+
+
+def test_an_inherited_flag_does_not_block_the_handover(monkeypatch):
+    """A flag from *another* process must not count as "already tried".
+
+    This cost a whole session once: our own "open folder" button starts the
+    file manager, KDE keeps that Dolphin alive and hands it every new window,
+    and everything started from it inherited the guard -- so the app fell
+    through to the terminal branch and simply never showed a window again.
+    """
+    from linux_prefix_hub import __main__ as m
+    monkeypatch.setenv(m.REEXEC_FLAG, str(os.getpid() + 1))
+    looked: list[str] = []
+    monkeypatch.setattr(m, "_system_python_with_gtk",
+                        lambda env: looked.append("looked") or None)
+
+    assert m._reexec_gui() == 1        # no interpreter found in this test
+    assert looked == ["looked"]        # but it did try, which is the point

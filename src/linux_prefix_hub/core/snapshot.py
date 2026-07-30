@@ -142,11 +142,15 @@ def diff(before: dict[str, float], after: dict[str, float]) -> list[str]:
 
 
 def classify_locations(changed_paths: list[str],
-                       where: str = WHERE_PREFIX) -> list[dict[str, Any]]:
+                       where: str = WHERE_PREFIX,
+                       known: list[dict[str, Any]] | None = None
+                       ) -> list[dict[str, Any]]:
     """Group changed files into storage locations (directory level).
 
     Heuristic for `type`: Documents/Saved Games -> saves, AppData -> config.
-    Can be refined later with PCGamingWiki data.
+    `known` are locations somebody else already typed for us -- PCGamingWiki
+    (`core/pcgw.py`), read from its cache. Those win over the heuristic,
+    which is the whole point of looking them up.
     """
     # Aggregate at a sensible directory level: the first 3 segments.
     dirs: dict[str, int] = {}
@@ -159,7 +163,7 @@ def classify_locations(changed_paths: list[str],
     guess = _guess_type_in_game_dir if where == WHERE_GAME else _guess_type
     return [
         {
-            "type": guess(win_path),
+            "type": known_type(win_path, where, known) or guess(win_path),
             "win_path": win_path,
             "where": where,
             "file_count": count,
@@ -168,6 +172,41 @@ def classify_locations(changed_paths: list[str],
         }
         for win_path, count in sorted(dirs.items(), key=lambda x: -x[1])
     ]
+
+
+def _norm_path(win_path: str) -> str:
+    """Windows paths are case-insensitive; the wiki spells them freely."""
+    return win_path.replace("\\", "/").strip("/").lower()
+
+
+def _contains(outer: str, inner: str) -> bool:
+    return bool(outer) and bool(inner) and inner.startswith(outer + "/")
+
+
+def known_type(win_path: str, where: str,
+               known: list[dict[str, Any]] | None) -> str:
+    """The type somebody already knows for this path, or "".
+
+    The diff aggregates to three path segments, a wiki entry names the exact
+    folder, so the two rarely spell the same string: `Documents/My Games/
+    Skyrim` against `Documents/My Games/Skyrim/Saves`. Containment in either
+    direction counts, but an exact match wins -- a game with a saves folder
+    *inside* its config folder must not turn the config folder into saves.
+    """
+    exact = nested = ""
+    for loc in known or ():
+        if str(loc.get("where") or WHERE_PREFIX) != where:
+            continue
+        kind = str(loc.get("type") or "")
+        if kind in ("", "unknown"):
+            continue
+        mine, theirs = _norm_path(win_path), _norm_path(
+            str(loc.get("win_path", "")))
+        if mine and mine == theirs:
+            exact = exact or kind
+        elif _contains(mine, theirs) or _contains(theirs, mine):
+            nested = nested or kind
+    return exact or nested
 
 
 def _guess_type(win_path: str) -> str:

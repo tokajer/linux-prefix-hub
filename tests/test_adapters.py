@@ -292,6 +292,117 @@ def test_heroic_connect_adds_the_wrapper(isolated_home, monkeypatch,
     assert data["9a1b2c"]["wrapperOptions"] == []
 
 
+# --- Generic (game folders no launcher knows about) ----------------------
+def _make_prefix(path, user="tokajer"):
+    """A game folder in the only sense that matters: the right shape."""
+    (path / "drive_c" / "users" / user / "Documents").mkdir(parents=True)
+    write(path / "user.reg", "WINE REGISTRY Version 2\n")
+    write(path / "system.reg", "WINE REGISTRY Version 2\n")
+    return path
+
+
+def test_generic_finds_hand_made_game_folders(isolated_home):
+    from linux_prefix_hub.adapters import generic
+    _make_prefix(isolated_home / ".local/share/wineprefixes/skyrim-se")
+    _make_prefix(isolated_home / "Games/Quake/pfx")     # one level deeper
+    _make_prefix(isolated_home / ".wine")
+    (isolated_home / "Games/not-a-game").mkdir(parents=True)
+
+    games = {g["game_name"]: g for g in generic.iter_games()}
+    assert set(games) == {"Skyrim Se", "Quake", "Windows games"}
+
+    skyrim = games["Skyrim Se"]
+    assert skyrim["app_id"] == skyrim["prefix_path"]    # the path is the id
+    assert skyrim["user_dir"] == "tokajer"
+    assert skyrim["installed"] is True
+    assert skyrim["managed"] is False
+
+
+def test_generic_skips_what_a_launcher_already_owns(isolated_home, tmp_path,
+                                                    monkeypatch):
+    """`~/Games/<slug>` is the Lutris default -- a hand-made folder has
+    exactly the same shape, so without this every Lutris game is listed
+    twice: once with its real name, once as a folder we found."""
+    from linux_prefix_hub.adapters import generic
+    prefix = _make_prefix(isolated_home / "Games/quake")
+    _fake_lutris(isolated_home, tmp_path, monkeypatch, prefix, layout="data")
+    _make_prefix(isolated_home / "Games/handmade")
+
+    assert [g["game_name"] for g in generic.iter_games()] == ["Handmade"]
+
+
+def test_generic_scans_a_folder_the_user_added(isolated_home, tmp_path):
+    from linux_prefix_hub.adapters import generic
+    from linux_prefix_hub.core import db
+    _make_prefix(tmp_path / "elsewhere/Diablo")
+
+    assert list(generic.iter_games()) == []
+    assert db.add_game_folder(tmp_path / "elsewhere") is True
+    assert db.add_game_folder(tmp_path / "elsewhere") is False  # only once
+
+    assert [g["game_name"] for g in generic.iter_games()] == ["Diablo"]
+
+    assert db.forget_game_folder(tmp_path / "elsewhere") is True
+    assert list(generic.iter_games()) == []
+
+
+def test_generic_context_takes_any_wineprefix(isolated_home, tmp_path,
+                                              monkeypatch):
+    """A user who put our wrapper in front of their own command has told us
+    about the game -- we do not also require it to sit in a known folder."""
+    from linux_prefix_hub.adapters import base, generic
+    prefix = _make_prefix(tmp_path / "somewhere/far/away/pfx")
+
+    monkeypatch.setenv("WINEPREFIX", str(prefix))
+    ctx = generic.context_from_env()
+    assert ctx and ctx["prefix_path"] == str(prefix)
+    assert ctx["game_name"] == "Away"          # named after the folder above
+    assert base.context_from_env() == ctx      # and via the aggregate
+
+
+def test_generic_ignores_a_launcher_prefix_in_the_environment(tmp_path,
+                                                              monkeypatch):
+    """Steam's own folder stays Steam's, even when its adapter came up empty
+    (a manifest being rewritten while the game starts)."""
+    from linux_prefix_hub.adapters import generic
+    prefix = _make_prefix(tmp_path / "steamapps/compatdata/1091500/pfx",
+                          user="steamuser")
+
+    monkeypatch.setenv("WINEPREFIX", str(prefix))
+    assert generic.context_from_env() is None
+
+
+def test_generic_connect_hands_over_a_command_and_remembers(isolated_home):
+    from linux_prefix_hub.adapters import generic
+    from linux_prefix_hub.core import db
+    prefix = _make_prefix(isolated_home / ".local/share/wineprefixes/osu")
+
+    result = generic.connect(str(prefix))
+    assert result.ok and result.manual
+    command = result["detail"]["command"]
+    assert str(prefix) in command and "linux-prefix-hub-wrapper" in command
+
+    # `managed` has no launcher config to live in, so it lives in our DB.
+    assert next(iter(generic.iter_games()))["managed"] is True
+    assert db.get_prefix(db.fingerprint(prefix))["game_name"] == "Osu"
+
+    assert generic.disconnect(str(prefix)).ok
+    assert next(iter(generic.iter_games()))["managed"] is False
+
+
+def test_generic_connect_refuses_a_folder_that_is_not_one(tmp_path):
+    from linux_prefix_hub.adapters import generic
+    result = generic.connect(str(tmp_path / "nothing here"))
+    assert not result.ok
+
+
+def test_generic_names_folders_the_way_they_are_spelled():
+    from linux_prefix_hub.adapters import generic
+    assert generic._pretty("skyrim-se") == "Skyrim Se"
+    assert generic._pretty("ELDEN RING") == "ELDEN RING"   # their decision
+    assert generic._pretty(".wine-osu") == "Osu"           # never say "wine"
+
+
 # --- Aggregation ---------------------------------------------------------
 def test_a_broken_adapter_does_not_break_the_scan(tmp_path, monkeypatch):
     from linux_prefix_hub.adapters import base

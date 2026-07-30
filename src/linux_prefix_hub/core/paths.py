@@ -49,6 +49,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"       # install_dir, language, ...
 PREFIX_DB = CONFIG_DIR / "prefixes.json"       # detected prefixes + storage
 KNOWN_GAMES = CONFIG_DIR / "known_games.json"  # for new-game detection
 SNAPSHOT_DIR = CONFIG_DIR / "snapshots"        # pending pre-launch snapshots
+PCGW_DIR = CONFIG_DIR / "pcgamingwiki"         # cached answers, one per game
 
 # Where redirected storage locations end up by default: one folder per game
 # below this. Our own subfolder, so ~/Games stays the user's -- they very
@@ -69,7 +70,12 @@ def snapshot_file(fingerprint: str) -> Path:
     return SNAPSHOT_DIR / f"{fingerprint}.json"
 
 
+def pcgw_cache_file(key: str) -> Path:
+    """One cached PCGamingWiki answer, keyed by source + game id."""
+    return PCGW_DIR / f"{key}.json"
+
+
 def ensure_dirs() -> None:
     for d in (DEFAULT_INSTALL_DIR, CONFIG_DIR, LOCAL_BIN,
-              SYSTEMD_USER_DIR, SNAPSHOT_DIR):
+              SYSTEMD_USER_DIR, SNAPSHOT_DIR, PCGW_DIR):
         d.mkdir(parents=True, exist_ok=True)

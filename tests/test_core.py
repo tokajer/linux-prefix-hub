@@ -210,6 +210,31 @@ def test_open_folder_uses_the_first_opener_it_finds(tmp_path, monkeypatch):
     assert calls == [["gio", "open", str(tmp_path)]]
 
 
+def test_the_file_manager_gets_a_clean_environment(tmp_path, monkeypatch):
+    """It outlives us, so nothing of ours may travel into it.
+
+    KDE keeps one Dolphin per session and hands it every new window; a
+    leaked `LPH_GUI_REEXEC` there made the app stop opening a window at all,
+    and a leaked `PYTHONHOME` points into a /tmp mount that will be gone.
+    """
+    from linux_prefix_hub import __main__ as m
+    from linux_prefix_hub.core import desktop
+    monkeypatch.setenv(desktop.GUI_REEXEC_FLAG, "12345")
+    monkeypatch.setenv("APPDIR", "/tmp/.mount_x")
+    monkeypatch.setenv("PYTHONHOME", "/tmp/.mount_x/opt/python3.12")
+    monkeypatch.setenv("KEEP_ME", "yes")
+    seen: list[dict] = []
+    monkeypatch.setattr(desktop.shutil, "which", lambda name: "/usr/bin/x")
+    monkeypatch.setattr(desktop.subprocess, "Popen",
+                        lambda argv, **kw: seen.append(kw["env"]))
+
+    assert desktop.open_folder(tmp_path) is True
+    assert desktop.GUI_REEXEC_FLAG not in seen[0]
+    assert "PYTHONHOME" not in seen[0]
+    assert seen[0]["KEEP_ME"] == "yes"          # only ours is stripped
+    assert desktop.GUI_REEXEC_FLAG == m.REEXEC_FLAG   # two spellings, one name
+
+
 def test_open_folder_refuses_what_is_not_there(tmp_path, monkeypatch):
     from linux_prefix_hub.core import desktop
     monkeypatch.setattr(desktop.shutil, "which", lambda name: "/usr/bin/x")

@@ -17,10 +17,14 @@ linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/linux-prefix-hub/
 ## What it does
 
 - **Discovery** across Steam (all libraries), Lutris (pga.db + YAML) and
-  Heroic (GamesConfig JSON) — with the real game names, not app ids.
+  Heroic (GamesConfig JSON) — with the real game names, not app ids. Games you
+  set up by hand, without any launcher, are found too (see below).
 - **Learning where a game saves**, by snapshotting the game folder before and
   after a session and diffing. No database of known games required; it works
   for obscure titles too.
+- **Or asking PCGamingWiki**, if you would rather not play first: one lookup
+  and the known save locations are there. Optional, cached, and never done
+  behind your back — see below.
 - **Connecting** a game installs the launch hook *in the launcher's own
   config*. Lutris and Heroic do it silently; Steam needs one click while Steam
   is closed (it overwrites its config on exit, so there is no way around that).
@@ -82,6 +86,63 @@ linux-prefix-hub --connect "Elden Ring"
 
 Then play once. `--status` will show what the game touched.
 
+## Looking a game up instead of playing it
+
+Not everything has to be learned the slow way — [PCGamingWiki][pcgw] already
+knows where thousands of games keep their saves:
+
+```bash
+linux-prefix-hub --lookup "Cyberpunk 2077"
+```
+
+```
+PCGamingWiki knows 2 save location(s) for Cyberpunk 2077.
+    [saves  ] Saved Games/CD Projekt Red/Cyberpunk 2077
+    [config ] AppData/Local/CD Projekt Red/Cyberpunk 2077
+    https://www.pcgamingwiki.com/wiki/Cyberpunk_2077
+```
+
+In the window it is the search button next to a game. What comes back is
+treated exactly like a location we found ourselves: you can open it, and move
+it into your home folder.
+
+Two things worth knowing:
+
+- **It only happens when you ask.** Nothing is looked up in the background,
+  and never while a game is starting or stopping. The switch in Settings
+  ("Allow looking games up online") turns it off entirely.
+- **Answers are cached** for a month, so asking twice does not bother anyone's
+  server. If the game has never been started, the answer waits until it has —
+  we key everything by the game folder, and there is not one yet.
+
+The wiki is a starting point, not the last word: it describes Windows, and
+your machine is the one that decides. Play once and the diff confirms — or
+corrects — what was looked up.
+
+[pcgw]: https://www.pcgamingwiki.com/
+
+## Games without a launcher
+
+A game folder you made yourself is found by its shape alone — we look in
+`~/.wine*`, `~/Games`, `~/.local/share/wineprefixes` and the other usual
+places, and skip everything a launcher already manages. If yours lives
+somewhere else:
+
+```bash
+linux-prefix-hub --add-game-folder /mnt/ssd/wine
+linux-prefix-hub --forget-game-folder /mnt/ssd/wine
+```
+
+There is no launcher config to hook here, so `--connect` hands you the line to
+put in front of your own launch command instead:
+
+```bash
+WINEPREFIX="$HOME/.wine-osu" "$HOME/.local/bin/linux-prefix-hub-wrapper" wine osu.exe
+```
+
+Everything after that is the same as for any other game: play once, `--status`
+shows what it touched, `--redirect` moves the saves into your home folder.
+
 ## Moving saves into your home folder
 
 ```bash
@@ -141,14 +202,17 @@ the local test build (`packaging/build-appimage.sh`) ships no updater at all.
 linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --gui                          the same thing, explicitly
   --terminal                     the overview in the terminal instead
-  --scan [--source X]            list games (steam | lutris | heroic)
+  --scan [--source X]            list games (steam | lutris | heroic | generic)
   --status                       learned storage locations
   --connect GAME                 install the launch hook
   --disconnect GAME              remove it again
+  --lookup GAME                  ask PCGamingWiki where it saves
   --redirect GAME [--target P]   move storage into your home folder
   --undo-redirect GAME           move it back
   --open GAME                    show its save folder in the file manager
   --set-save-folder PATH         where moved saves are kept
+  --add-game-folder PATH         also look for games there
+  --forget-game-folder PATH      stop looking there
   --check-update / --update      Velopack
   --integrate                    recreate shims/service/menu entry
   --lang / --set-language        language for this run / permanently
@@ -165,6 +229,7 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
 ~/.local/bin/linux-prefix-hub-hook                        hook for Lutris
 ~/.local/bin/linux-prefix-hub-daemon                      hook for systemd
 ~/.config/linux-prefix-hub/                               config, database
+~/.config/linux-prefix-hub/pcgamingwiki/                  cached lookups
 ~/.config/systemd/user/linux-prefix-hub-watcher.service
 ~/Games/linux-prefix-hub/<Game>/                          where saves go
 ```
@@ -184,12 +249,22 @@ Steam libraries, Heroic (Flatpak) and GearLever (Flatpak):
   (`appimages-default-folder`) instead of guessed.
 - ✅ **The GUI from inside the AppImage** — hands over to the system
   interpreter, since the bundled CPython has no PyGObject.
+- ✅ **The PCGamingWiki lookup against the live wiki** — Steam appid, exact
+  title and search resolution, plus a name that has no article. Portal 2's
+  install-folder saves, Cyberpunk's `Saved Games`, Skyrim's `My Games` and
+  Hollow Knight's `LocalLow` all map to the paths the diff would produce.
 
-Three bugs that only real data exposed, now fixed and covered by regression
+Five bugs that only real use exposed, now fixed and covered by regression
 tests: a duplicate appid listed twice (same manifest in two libraries), Proton
 and the Linux runtimes listed as games (they are identifiable by a
-`toolmanifest.vdf`, by nothing inside the manifest), and Heroic's
-`download-manager.json` marking an installed game as not installed.
+`toolmanifest.vdf`, by nothing inside the manifest), Heroic's
+`download-manager.json` marking an installed game as not installed, every
+lookup reporting "could not reach PCGamingWiki" **from inside the AppImage**
+while working fine outside it (the bundled CPython carries no CA certificates,
+so we hand it the host's — `pcgw.ssl_context`), and the app silently refusing
+to open a window when started from a file manager that we had started
+ourselves earlier — it had inherited our GUI hand-over guard and passed it on
+(`__main__._reexec_gui`, `desktop._child_env`).
 
 ## ⚠️ Still to verify on real hardware (VERIFY-ON-DEVICE)
 
@@ -206,7 +281,10 @@ Marked in the code at the relevant spots:
    `winecfg` → Desktop Integration that the folder points where you expect.
 4. **Desktop notifications from a systemd user service** — need a reachable
    D-Bus (`DBUS_SESSION_BUS_ADDRESS`).
-5. **The Velopack build** (`packaging/build-velopack.sh`) — never run end to
+5. **Hand-made game folders** — `DEFAULT_ROOTS` in `adapters/generic.py` is a
+   "where do people keep these" list and cannot be complete. Check it against
+   your own setup; anything missing is one `--add-game-folder` away.
+6. **The Velopack build** (`packaging/build-velopack.sh`) — never run end to
    end: the machine it was written on had no working .NET SDK. Check that
    `--mainExe` accepts a shell launcher, what file names `vpk` emits, and
    whether GearLever still accepts a vpk-built AppImage.

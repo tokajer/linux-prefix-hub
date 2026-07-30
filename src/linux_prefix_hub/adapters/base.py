@@ -1,4 +1,4 @@
-"""Common ground for all source adapters (Steam, Lutris, Heroic, ...).
+"""Common ground for all source adapters (Steam, Lutris, Heroic, generic).
 
 A source adapter does exactly three things:
   1. **Discovery**  -- find games, their prefix and their user dir.
@@ -27,7 +27,9 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-SOURCES = ("steam", "lutris", "heroic")
+# Order matters twice: `context_from_env` asks in this order, and the generic
+# adapter skips whatever the launchers before it already claim. It stays last.
+SOURCES = ("steam", "lutris", "heroic", "generic")
 
 Game = dict[str, Any]
 
@@ -69,7 +71,23 @@ def get_adapter(source: str):
     if source == "heroic":
         from . import heroic
         return heroic
+    if source == "generic":
+        from . import generic
+        return generic
     raise ValueError(f"unknown source: {source}")
+
+
+def source_label(source: str) -> str:
+    """The name of a source as the user should read it.
+
+    The ids are ours; "generic" in particular is a word for this codebase, not
+    for the person who installed a game by hand.
+    """
+    from ..core.i18n import _
+    if source == "generic":
+        return _("hand-installed")
+    return {"steam": "Steam", "lutris": "Lutris",
+            "heroic": "Heroic"}.get(source, source)
 
 
 def iter_games(sources: tuple[str, ...] | None = None) -> Iterator[Game]:

@@ -12,6 +12,7 @@ Matches the AppImage concept: ONE artifact, several modes.
   --scan             list games from all sources
   --status           show what we learned
   --connect GAME     install the launch hook for one game
+  --lookup GAME      ask PCGamingWiki where it saves, without playing it
   --redirect GAME    move its storage locations into your home
   --open GAME        show its save folder in the file manager
 
@@ -102,26 +103,50 @@ def _cmd_status() -> int:
     return 0
 
 
+def _game_folder(needle: str, entry: dict | None) -> str | None:
+    """Where the game itself lives -- from the DB, else from the launcher.
+
+    The DB only knows a game once something has been learned about it, but
+    the folder exists as soon as the game has been started once. Asking the
+    adapters covers exactly that gap.
+    """
+    if entry and entry.get("prefix_path"):
+        return str(entry["prefix_path"])
+    folders = {str(g["prefix_path"]) for g in _match_games(needle)
+               if g.get("prefix_path")}
+    return folders.pop() if len(folders) == 1 else None
+
+
 def _cmd_open(needle: str) -> int:
-    """Show a game's save folder in the file manager."""
+    """Show a game's save folder in the file manager.
+
+    Falls back to the game folder itself. "Where does this game keep its
+    things?" has an answer before we have learned anything -- and that answer
+    is the folder the game lives in.
+    """
     from .core import db, desktop, redirect
     found = db.resolve(needle)
-    if not found:
-        print(_("'{needle}' is not in the list yet. Connect the game and play "
-                "it once so we know where it stores things.", needle=needle))
-        return 1
-    _fingerprint, entry = found
+    entry = found[1] if found else None
 
     opened = 0
-    for loc in entry.get("storage_locations", []):
-        path = redirect.location_path(entry, loc)
+    for loc in (entry or {}).get("storage_locations", []):
+        path = redirect.location_path(entry or {}, loc)
         if path and desktop.open_folder(path):
             print(_("Opening {path}", path=str(path)))
             opened += 1
     if opened:
         return 0
-    print(_("No folder to open for {game} -- nothing is stored there (yet).",
-            game=entry.get("game_name")))
+
+    folder = _game_folder(needle, entry)
+    if folder and desktop.open_folder(folder):
+        print(_("Opening the game folder {path}", path=folder))
+        return 0
+    if entry:
+        print(_("No folder to open for {game} -- nothing is stored there "
+                "(yet).", game=entry.get("game_name")))
+    else:
+        print(_("'{needle}' is not in the list yet. Connect the game and play "
+                "it once so we know where it stores things.", needle=needle))
     return 1
 
 
@@ -139,6 +164,27 @@ def _cmd_connect(needle: str, source: str | None, undo: bool) -> int:
         if found:
             db.set_managed(found[0], result.ok and not undo)
     return 0 if result.ok else 1
+
+
+def _cmd_lookup(needle: str, source: str | None) -> int:
+    """Ask PCGamingWiki where a game saves, instead of playing it first."""
+    from .core import pcgw
+    game = _pick_game(needle, source)
+    if not game:
+        return 1
+
+    result = pcgw.lookup_and_store(game)
+    print(result["message"])
+    for loc in result["locations"]:
+        print(f"    [{loc.get('type', '?'):<7}] {loc.get('win_path')}"
+              + (" " + _("(in the game's own folder)")
+                 if loc.get("where") == "game_folder" else ""))
+    if result["url"]:
+        print("    " + str(result["url"]))
+    if result["locations"] and not result.get("stored"):
+        print(_("Connect the game and start it once -- then these show up "
+                "with it."))
+    return 0 if result["ok"] else 1
 
 
 def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
@@ -176,6 +222,22 @@ def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
         print(f"{root}: {result.message}")
         failed = failed or not result.ok
     return 1 if failed else 0
+
+
+def _cmd_game_folder(path: str, forget: bool) -> None:
+    """Remember (or drop) a folder we look in for hand-installed games."""
+    import os
+
+    from .core import db
+    full = os.path.abspath(os.path.expanduser(path))
+    if forget:
+        print(_("No longer looking in {path}.", path=full)
+              if db.forget_game_folder(full)
+              else _("{path} was not in the list.", path=full))
+        return
+    print(_("Also looking for games in {path}.", path=full)
+          if db.add_game_folder(full)
+          else _("{path} is already in the list.", path=full))
 
 
 def _cmd_update(install: bool) -> int:
@@ -256,7 +318,7 @@ def _handover_env() -> dict[str, str]:
            if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
                         "PYTHONEXECUTABLE")}
     env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
-    env[REEXEC_FLAG] = "1"
+    env[REEXEC_FLAG] = str(os.getpid())      # see _reexec_gui
     return env
 
 
@@ -287,9 +349,20 @@ def _system_python_with_gtk(env: dict[str, str]) -> str | None:
 
 def _reexec_gui() -> int:
     """Restart --gui under a system interpreter that has GTK. Never returns
-    on success."""
+    on success.
+
+    The loop guard is **our own pid**, not a plain "1". `execve` keeps the
+    pid, so the interpreter we hand over to still recognises the flag -- but a
+    process that merely *inherited* our environment does not, and that
+    distinction is the whole point. We start the user's file manager
+    (`core/desktop.py`), KDE keeps that one Dolphin alive for the rest of the
+    session and hands new windows to it, so a flag it kept would make every
+    later start of this app skip the handover and fall through to the terminal
+    branch -- with no window and the explanation printed into the journal
+    where nobody reads it. Symptom: "the app does not start any more".
+    """
     import os
-    if os.environ.get(REEXEC_FLAG):
+    if os.environ.get(REEXEC_FLAG) == str(os.getpid()):
         return 1                       # already tried; do not loop
     env = _handover_env()
     exe = _system_python_with_gtk(env)
@@ -336,6 +409,7 @@ def _cmd_terminal() -> int:
     print("  --gui      " + _("open the window (this is the default)"))
     print("  --scan     " + _("list your games"))
     print("  --connect  " + _("connect a game so we can learn from it"))
+    print("  --lookup   " + _("look up online where a game saves"))
     print("  --status   " + _("show learned storage locations"))
     print("  --redirect " + _("move a game's storage into your home folder"))
     print("  --open     " + _("show a game's save folder in the file "
@@ -370,6 +444,10 @@ def _build_parser() -> Any:
                    help=_("remember a language (en, de, auto)"))
     p.add_argument("--set-save-folder", metavar="PATH",
                    help=_("remember where moved saves should be kept"))
+    p.add_argument("--add-game-folder", metavar="PATH",
+                   help=_("also look for games in this folder"))
+    p.add_argument("--forget-game-folder", metavar="PATH",
+                   help=_("stop looking for games in that folder"))
     p.add_argument("--source", choices=SOURCES,
                    help=_("limit to one launcher"))
     p.add_argument("--target", metavar="PATH",
@@ -388,6 +466,8 @@ def _build_parser() -> Any:
                    help=_("install the launch hook for a game"))
     g.add_argument("--disconnect", metavar="GAME",
                    help=_("remove the launch hook again"))
+    g.add_argument("--lookup", metavar="GAME",
+                   help=_("look up online where a game saves"))
     g.add_argument("--redirect", metavar="GAME",
                    help=_("move a game's storage into your home folder"))
     g.add_argument("--undo-redirect", metavar="GAME",
@@ -440,8 +520,8 @@ def main() -> int:
 
     parsed = _build_parser().parse_args(args)
 
-    other_commands = ("scan", "status", "connect", "disconnect", "redirect",
-                      "undo_redirect", "open", "integrate")
+    other_commands = ("scan", "status", "connect", "disconnect", "lookup",
+                      "redirect", "undo_redirect", "open", "integrate")
 
     if parsed.set_language:
         db.set_config("language", parsed.set_language)
@@ -459,6 +539,14 @@ def main() -> int:
             print(_("Already moved folders stay where they are."))
             return 0
 
+    if parsed.add_game_folder or parsed.forget_game_folder:
+        if parsed.add_game_folder:
+            _cmd_game_folder(parsed.add_game_folder, forget=False)
+        if parsed.forget_game_folder:
+            _cmd_game_folder(parsed.forget_game_folder, forget=True)
+        if not any(getattr(parsed, name) for name in other_commands):
+            return 0
+
     if parsed.gui:
         return _cmd_gui()
     if parsed.terminal:
@@ -471,6 +559,8 @@ def main() -> int:
         return _cmd_connect(parsed.connect, parsed.source, undo=False)
     if parsed.disconnect:
         return _cmd_connect(parsed.disconnect, parsed.source, undo=True)
+    if parsed.lookup:
+        return _cmd_lookup(parsed.lookup, parsed.source)
     if parsed.redirect:
         return _cmd_redirect(parsed.redirect, parsed.target, undo=False)
     if parsed.undo_redirect:

@@ -115,6 +115,21 @@ def _before(ctx: dict[str, Any]) -> tuple[str, Snapshots]:
     return fingerprint, _snapshot_all(ctx)
 
 
+def _known_locations(ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """What PCGamingWiki told us about this game -- from the cache only.
+
+    Reading a local JSON is all this does: the wiki is asked when the user
+    asks (`--lookup`, the button in the window), never here. A game that has
+    just exited is not the moment to wait on someone else's server.
+    """
+    try:
+        from . import pcgw
+        return pcgw.cached_locations(str(ctx.get("source", "")),
+                                     str(ctx.get("app_id", "")))
+    except Exception:
+        return []
+
+
 def _after(ctx: dict[str, Any], before: Snapshots) -> None:
     """Diff against the pre-launch snapshot and store what we learned.
 
@@ -122,14 +137,19 @@ def _after(ctx: dict[str, Any], before: Snapshots) -> None:
     AppData/Local/Temp inside the prefix and writes its real saves into
     `<install folder>/portal2/SAVE/` -- prefix-only detection learns nothing
     at all about it.
+
+    Anything already looked up goes in first, so that a location the diff
+    also saw keeps the diff's file count while the two entries stay one
+    entry (`db.location_key`).
     """
+    known = _known_locations(ctx)
     after = _snapshot_all(ctx)
     locations: list[dict[str, Any]] = []
     for where, before_state in before.items():
         changed = snapshot.diff(before_state, after.get(where, {}))
-        locations += snapshot.classify_locations(changed, where)
-    if locations:
-        db.upsert_prefix(_entry_from_context(ctx, locations))
+        locations += snapshot.classify_locations(changed, where, known)
+    if locations or known:
+        db.upsert_prefix(_entry_from_context(ctx, known + locations))
 
 
 def main(argv: list[str]) -> int:

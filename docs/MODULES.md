@@ -19,6 +19,7 @@ command).
 | `--integrate` | `core.integrate.full_setup` | AppRun (self-heal) |
 | `--scan`, `--status` | listing | user |
 | `--connect`, `--disconnect` | adapter hook | user |
+| `--lookup` | `core.pcgw.lookup_and_store` | user |
 | `--redirect`, `--undo-redirect` | `core.redirect` | user |
 | `--check-update`, `--update` | `core.updater` | user |
 | `--lang`, `--set-language` | `core.i18n` | user |
@@ -26,13 +27,20 @@ command).
 **Building on it:** the three shim modes are matched *before* argparse and use
 lazy imports, so a game launch never pays for the CLI. Keep it that way.
 
+**Watch out:** `_reexec_gui`'s loop guard is our own **pid**, not a boolean.
+`execve` keeps the pid, so the interpreter we hand the window to still sees
+"already tried" — while a process that merely inherited the variable does not.
+Anything that spawns a program which outlives us must strip it as well
+(`core/desktop.py`).
+
 ---
 
 ## `core/paths.py` — central paths
 
 Every fixed location in one place, XDG-conform:
 `DEFAULT_INSTALL_DIR`, `CONFIG_DIR`, `LOCAL_BIN`, the three shims,
-`WATCHER_UNIT`, `SNAPSHOT_DIR`, `DEFAULT_REDIRECT_ROOT` (`~/Games`).
+`WATCHER_UNIT`, `SNAPSHOT_DIR`, `PCGW_DIR`, `DEFAULT_REDIRECT_ROOT`
+(`~/Games`).
 
 The constants are resolved at **import** time, which is why the tests reload
 this module after redirecting `HOME`.
@@ -63,6 +71,8 @@ falls back to the English source.
 JSON in `~/.config/linux-prefix-hub/`, atomic writes (tmp + replace).
 
 `fingerprint`, `load_config`/`save_config`/`set_config`/`install_dir`,
+`extra_game_folders`/`add_game_folder`/`forget_game_folder` (the folders
+`adapters/generic.py` looks in beyond its defaults),
 `load_prefixes`/`save_prefixes`, `upsert_prefix`, `get_prefix`, `find_prefix`,
 `resolve` (fingerprint | app id | partial name), `update_location`,
 `set_managed`.
@@ -85,8 +95,10 @@ Two **spaces**, named by `WHERE_PREFIX` / `WHERE_GAME`; every location carries
 - `snapshot_game_dir(game_dir) -> {rel_path: mtime} | None` over the install
   folder, skipping `IGNORE_GAME_*` (logs, dumps, `steam_appid.txt`).
 - `diff(before, after) -> [rel_path]`
-- `classify_locations(changed, where) -> [location]` — aggregates to directory
-  level and guesses `type` (saves/config/unknown).
+- `classify_locations(changed, where, known) -> [location]` — aggregates to
+  directory level and guesses `type` (saves/config/unknown). `known` are
+  locations PCGamingWiki already typed (`core/pcgw.py`); they win over the
+  guess, matched by `known_type` on exact path first, containment second.
 - `save_pending` / `load_pending` — hands the "before" state of *both* spaces
   from the pre hook to the post hook (Lutris runs them as two processes).
   Reads a flat pre-install-folder file as a prefix-only state.
@@ -103,9 +115,62 @@ are not interchangeable: a fresh install is legitimately near-empty, and
 folding that into "not covered" throws away the first launch, the one with the
 most to teach.
 
-**Building on it:** `_guess_type` is coarse; PCGamingWiki data would sharpen
-it. For very large prefixes the `rglob` could be pre-filtered by directory
-mtime.
+**Building on it:** for very large prefixes the `rglob` could be pre-filtered
+by directory mtime.
+
+---
+
+## `core/pcgw.py` — what PCGamingWiki already knows
+
+Answers "where does this game save?" without playing the game, and types the
+answer properly instead of guessing from the path.
+
+- `lookup(game, refresh=False) -> {ok, reason, page, url, locations, cached,
+  message}` — the whole flow, cache first. Never raises; `message` is already
+  translated, like `redirect`/`updater` results.
+- `lookup_and_store(game)` — the same plus the DB write, adds `stored`.
+- `cached_locations(source, app_id)` — cache only, never expires, never online.
+  **This is the only entry point the launch hook uses.**
+- `parse_game_data(wikitext)` / `expand_path(raw)` — pure, no network, and
+  where the actual work happens.
+- `enabled()` — config `online_lookup`, default true.
+
+**Resolving the article:** a Steam appid is an exact key and goes through their
+Cargo table (`Infobox_game.Steam_AppID`); everything else goes by title, then
+by search. The search step is guarded by `_same_game`, because a *wrong*
+article is worse than none: "Portal" must not answer for "Portal 2", while
+"Cyberpunk 2077" should answer for "Cyberpunk 2077 Ultimate Edition".
+
+**Mapping paths:** the wiki writes `{{p|token}}\rest`. Only tokens that land in
+one of our two spaces survive (`PATH_ROOTS`): `userprofile`,
+`userprofile\documents`, `userprofile\appdata\locallow`, `appdata`,
+`localappdata` → prefix space; `game` → install folder. Dropped: `{{p|steam}}\
+userdata` (Steam Cloud, not in the prefix), `{{p|hkcu}}` (the registry),
+`{{p|programdata}}`, and every non-Windows row — a Linux row's `{{p|game}}`
+path looks exactly like ours and would be a plausible lie. Trailing file names
+and wildcards are stripped: a storage location is a folder.
+
+**Watch out:**
+
+- Wikitext is people, not an API. `_templates`/`_split_params` are brace-aware
+  (paths contain `{{p|…}}`, so a plain `split("|")` shreds them), and anything
+  unparseable is dropped rather than guessed at.
+- **Misses are cached, unreachable is not** (`HIT_TTL` 30 days, `MISS_TTL` 1
+  day). "No article" is about the game; "no network" is about us, and caching
+  it would strand the user offline for a month.
+- `store()` returns None when the game has no prefix yet — the DB is keyed by
+  the prefix. The answer stays in the cache, and `wrapper._after` folds it in
+  the first time the game actually runs.
+- **`ssl_context()` is not optional.** The AppImage's bundled CPython has an
+  *empty* trust store (`ssl.get_default_verify_paths()` → `None, None`): its
+  OpenSSL was built against a certificate directory that does not exist on the
+  host. Every HTTPS call then dies with `CERTIFICATE_VERIFY_FAILED`, which
+  reaches the user as "Could not reach PCGamingWiki" on a machine that is
+  online. So we load the host's CA bundle (`CA_BUNDLES`, `CA_DIRS`) when ours
+  is empty. Verification is never turned off — if no store is found the call
+  fails like being offline, which is the honest outcome. Anything else in this
+  codebase that grows a Python-level HTTPS client needs the same treatment
+  (Velopack does not: its native layer brings its own).
 
 ---
 
@@ -117,6 +182,11 @@ sharing `_before()` / `_after()`, plus `game_env()`.
 Read-only towards the game except for `redirect.reapply()`, which repairs
 redirections the user already asked for. Every step is guarded so a failure in
 our code cannot stop the game, and the game's exit code is passed through.
+
+`_after()` also folds in `_known_locations()` — what a lookup already found,
+read from `pcgw`'s **cache**, never from the network. It does two jobs: it
+sharpens the type of what the diff saw, and it carries an answer that was
+looked up before the game had a prefix into the DB on the first launch.
 
 **Watch out:** `game_env()` undoes what the AppImage did to the environment
 (`BUNDLE_VARS`, `BUNDLE_LISTS`) before the game is started. Without it the
@@ -196,6 +266,16 @@ completely different feed, in config.json — no rebuild needed.
 
 ## `core/desktop.py` — handing a folder to the desktop
 
+**Watch out:** the file manager gets `_child_env()`, not our environment. It
+outlives us — KDE keeps one Dolphin per session and hands it every new window
+— so whatever we leak is inherited by everything the user starts from it for
+the rest of the session. That is not theory: leaking `LPH_GUI_REEXEC` once
+made every later start of the app skip the GTK hand-over and fall through to
+the terminal branch, i.e. *no window at all*, with the explanation printed
+into the journal where nobody looks (`__main__._reexec_gui`). The bundle
+variables are stripped for the same reason `wrapper.game_env` strips them, and
+from the same list.
+
 `open_folder(path) -> bool`. `xdg-open` first (it honours whatever file manager
 the user configured), then a per-desktop fallback chain. Never waits for the
 file manager, and refuses a path that is not a directory — a file manager's
@@ -231,10 +311,15 @@ Lutris adapter so user configs are not reformatted.
 
 `SOURCES`, `get_adapter(name)` (lazy import), `iter_games(sources)`,
 `context_from_env()`, `context_for(source, app_id)`, `is_prefix(path)`,
-`user_dir_for(prefix)`, and `HookResult` (ok / manual / message / detail).
+`user_dir_for(prefix)`, `source_label(source)` (the id is internal, the label
+is what the user reads), and `HookResult` (ok / manual / message / detail).
 
 `iter_games` isolates each adapter: a launcher with a broken config drops out
 of the list instead of taking the scan down.
+
+The order of `SOURCES` is not cosmetic: `context_from_env` asks in that order,
+and `generic` — which claims *any* game folder — must come last, after every
+adapter that can name a game properly.
 
 ---
 
@@ -291,6 +376,36 @@ should be closed while we write.
 
 ---
 
+## `adapters/generic.py` — game folders without a launcher
+
+`roots()` (`DEFAULT_ROOTS` + `~/.wine*` + `db.extra_game_folders()`),
+`iter_games`, `game_for`, `game_name_for`, `context_from_env`,
+`launch_command`, `connect`, `disconnect`.
+
+Discovery is the shape test and nothing else: `base.is_prefix` at or below each
+root, `SCAN_DEPTH` (2) levels deep, stopping at the first hit — `~/Games/X` and
+`~/Games/X/pfx` are equally common.
+
+Three things are different here, and each one is a deliberate decision:
+
+- **The path is the `app_id`.** There is no launcher-assigned id, and the path
+  is unique, stable and exactly what `connect` needs to write its instructions.
+- **`_claimed_prefixes()` asks the other adapters first** and skips everything
+  they list. `~/Games/<slug>` is the Lutris default and has the same shape as a
+  hand-made folder, so without this half the library appears twice. It costs
+  one extra discovery pass; that is the price of not lying to the user.
+- **`connect` has nothing to write into**, so it returns a `manual` result with
+  the command to put in front of the user's own launch command, and records
+  `managed` in *our* DB — for every other source the launcher config is that
+  record, here there is no other config.
+
+`context_from_env` deliberately accepts **any** `WINEPREFIX` (except one under
+`compatdata`/`steamapps`, or one another adapter claims), not just folders
+under a known root: someone who followed `connect` has told us about that game
+more clearly than any folder list could.
+
+---
+
 ## `daemon/watcher.py` — the background service
 
 `run()` (inotify on all steamapps + periodic rescan of the other sources),
@@ -336,7 +451,9 @@ presentation differs.
 `FixedLocationRow`, `SettingsDialog`, `open_button()`, `esc()`.
 
 One `Adw.ExpanderRow` per game: a switch that calls the same
-`adapter.connect()` the CLI uses, and one row per learned save location.
+`adapter.connect()` the CLI uses, a search button that calls
+`pcgw.lookup_and_store()` (network, so off the main loop like everything else),
+and one row per learned save location.
 `LocationRow` (a shell folder) carries the switch that calls `core.redirect`;
 `FixedLocationRow` is the read-only twin for everything that cannot be moved —
 the install folder, or a prefix path outside any shell folder. Both carry an
@@ -344,9 +461,11 @@ the install folder, or a prefix path outside any shell folder. Both carry an
 this game save?" is the question the app exists to answer, and the answer is
 useful even when we cannot act on it.
 
-`SettingsDialog` edits `redirect_root` only. `Adw.PreferencesDialog` (libadwaita
-1.5+) and `Gtk.FileDialog` (GTK 4.10+) are both feature-detected — the window
-runs on whatever the *host* has, not on what the AppImage bundles.
+`SettingsDialog` edits `redirect_root` and `online_lookup`.
+`Adw.PreferencesDialog` (libadwaita 1.5+) and `Gtk.FileDialog` (GTK 4.10+) are
+both feature-detected — the window runs on whatever the *host* has, not on what
+the AppImage bundles. That is also why the online switch is an `ActionRow` with
+a `Gtk.Switch` rather than an `Adw.SwitchRow` (libadwaita 1.4+).
 
 `HookResult.manual` (Steam running) becomes a dialog with a copy button.
 
