@@ -397,3 +397,41 @@ def test_no_locator_is_invented_outside_the_bundle(monkeypatch, tmp_path):
     monkeypatch.setenv("APPDIR", str(tmp_path / "empty"))
     monkeypatch.setenv("APPIMAGE", str(tmp_path / "App.AppImage"))
     assert updater._manager() is None
+
+
+# --- restarting after an update ------------------------------------------
+def test_restart_starts_the_new_build_without_our_bundle(monkeypatch,
+                                                         tmp_path):
+    """Velopack's own restart does not always come back as one, and then the
+    window still runs the old code. The child must not inherit the bundle:
+    PYTHONHOME points into a mount that is about to disappear."""
+    import subprocess
+
+    from linux_prefix_hub.core import updater
+    appimage = tmp_path / "App.AppImage"
+    appimage.write_text("#!/bin/true\n")
+    monkeypatch.setenv("APPIMAGE", str(appimage))
+    monkeypatch.setenv("APPDIR", "/tmp/.mount_x")
+    monkeypatch.setenv("PYTHONHOME", "/tmp/.mount_x/opt/python3.12")
+    monkeypatch.setenv("LPH_GUI_REEXEC", "4242")
+    started: list[dict] = []
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: started.append({"argv": argv,
+                                                           **kw}))
+
+    assert updater.restart_app() is True
+
+    assert started[0]["argv"] == [str(appimage), "--gui"]
+    assert started[0]["start_new_session"] is True
+    env = started[0]["env"]
+    assert "PYTHONHOME" not in env and "APPDIR" not in env
+    assert "LPH_GUI_REEXEC" not in env
+
+
+def test_restart_declines_outside_the_appimage(monkeypatch, tmp_path):
+    from linux_prefix_hub.core import updater
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    assert updater.restart_app() is False
+
+    monkeypatch.setenv("APPIMAGE", str(tmp_path / "gone.AppImage"))
+    assert updater.restart_app() is False

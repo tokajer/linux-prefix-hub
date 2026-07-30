@@ -271,7 +271,7 @@ install-folder case fights with launcher updaters.
 ## `core/updater.py` — self-update via Velopack
 
 `app_hook()`, `check(force)` (cached for a day in config.json), `update()`,
-`available()`, `repo_url()`, `is_newer`, `parse_version`.
+`restart_app()`, `available()`, `repo_url()`, `is_newer`, `parse_version`.
 
 Velopack owns the mechanics: `check_for_updates` → `download_updates` →
 `apply_updates_and_restart`, against the GitHub release feed that
@@ -301,6 +301,13 @@ claimed to be current while the terminal offered the update.
 
 Everything degrades to an honest message when the `velopack` wheel is absent
 (pip installs, and the local `build-appimage.sh` test build).
+
+`restart_app()` exists because Velopack's `apply_updates_and_restart`
+does not always come back as a restart. When it returns, the window is
+still the old code showing the old version — so the GUI offers the
+restart instead of leaving the user to work it out. A new process, not
+`execv`: the AppImage mount belongs to this pid. The child gets
+`desktop.child_env()` (CLAUDE.md rule 4).
 
 **Building on it:** `github_owner`/`github_repo`, or `update_url` for a
 completely different feed, in config.json — no rebuild needed.

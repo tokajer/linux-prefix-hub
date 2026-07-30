@@ -736,11 +736,44 @@ class LphApplication(Adw.Application):
             if error is not None:
                 window.toast(_("Update failed: {error}", error=str(error)))
                 return
-            window.toast(str(result.get("message", "")))
             if not result.get("ok"):
+                window.toast(str(result.get("message", "")))
                 window.offer_update(None)      # let them try again
+                return
+            # We are still the old code: the window cannot show the new
+            # version, so say so and offer the restart instead of leaving
+            # the user to work it out.
+            window.offer_update(None)
+            if result.get("skipped"):           # GearLever handles it
+                window.toast(str(result.get("message", "")))
+            else:
+                self._offer_restart(window)
 
         tasks.run(work, done)
+
+    def _offer_restart(self, window: MainWindow) -> None:
+        dialog = Adw.AlertDialog(
+            heading=_("Update installed"),
+            body=_("The window is still running the old version. Restart to "
+                   "use the new one."))
+        dialog.add_response("later", _("Later"))
+        dialog.add_response("restart", _("Restart now"))
+        dialog.set_response_appearance("restart",
+                                       Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("restart")
+
+        def on_response(_dialog: Any, response: str) -> None:
+            if response != "restart":
+                return
+            from ..core import updater
+            if updater.restart_app():
+                self.quit()
+            else:
+                window.toast(_("Could not restart. Please start {app} again.",
+                               app=paths.APP_TITLE))
+
+        dialog.connect("response", on_response)
+        dialog.present(window)
 
     def _on_integrate(self, *_args: Any) -> None:
         window = self._window

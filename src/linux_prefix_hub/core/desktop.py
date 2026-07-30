@@ -11,7 +11,7 @@ folder" is just as useful from the terminal (`--open`), so the knowledge of
 configured; the rest is a fallback chain for the desktops that ship their own.
 We never wait for the file manager to exit -- it outlives us.
 
-**Which is exactly why it gets a clean environment** (`_child_env`). A file
+**Which is exactly why it gets a clean environment** (`child_env`). A file
 manager is not a program we start and forget: KDE keeps one Dolphin for the
 whole session and hands every new window to it, so anything we leak into it is
 inherited by everything the user opens from it afterwards.
@@ -37,8 +37,11 @@ def _argv(opener: str, path: str) -> list[str]:
     return [opener, "open", path] if opener == "gio" else [opener, path]
 
 
-def _child_env() -> dict[str, str]:
-    """The environment the file manager would have had without us.
+def child_env() -> dict[str, str]:
+    """The environment a process we start would have had without us.
+
+    Used for the file manager and for the restart after an update -- both
+    outlive us, and neither may inherit the bundle.
 
     Same reasoning as `wrapper.game_env` -- and deliberately the same list,
     imported rather than repeated: nothing the AppImage set up for *our*
@@ -65,7 +68,7 @@ def open_folder(path: str | Path) -> bool:
     folder = Path(path)
     if not folder.is_dir():
         return False
-    env = _child_env()
+    env = child_env()
     for opener in OPENERS:
         if not shutil.which(opener):
             continue

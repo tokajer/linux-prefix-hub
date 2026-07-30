@@ -266,6 +266,36 @@ def update(force: bool = False) -> dict[str, Any]:
                          version=version)}
 
 
+def restart_app() -> bool:
+    """Start the freshly updated app and let this process finish.
+
+    Velopack's `apply_updates_and_restart` does not always come back as a
+    restart -- when it returns instead, the window is still running the old
+    code, still showing the old version, and the user is left restarting by
+    hand. So we offer to do it.
+
+    A new process rather than `execv`: the AppImage mount belongs to this pid
+    and has to be released, and the new build brings its own. The child gets
+    `desktop.child_env()` for the reason in CLAUDE.md rule 4 -- our bundle's
+    `PYTHONHOME` points into a /tmp mount that is about to disappear.
+    """
+    import os
+    import subprocess
+    from pathlib import Path
+
+    from . import desktop
+
+    appimage = os.environ.get("APPIMAGE")
+    if not appimage or not Path(appimage).exists():
+        return False            # not the packaged build: nothing to restart
+    try:
+        subprocess.Popen([appimage, "--gui"], start_new_session=True,
+                         env=desktop.child_env())
+    except OSError:
+        return False
+    return True
+
+
 def installed_path() -> Any:
     """Where the managed binary lives (unchanged concept, Velopack-owned)."""
     return paths.installed_appimage_path(db.install_dir())
