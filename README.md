@@ -89,6 +89,24 @@ linux-prefix-hub --connect "Elden Ring"
 
 Then play once. `--status` will show what the game touched.
 
+### When something shows up that is not a save
+
+A session changes more than your progress: shader caches, crash dumps and log
+files churn on every launch. The known ones are filtered out already — Aim Lab
+writing its DXVK pipeline cache to `AppData/Local/dxvk` used to be listed as a
+storage location, and no longer is. Every engine invents its own, though, so
+you can add your own filter:
+
+```bash
+linux-prefix-hub --ignore-path "AppData/Local/SomeEngine/Cache"
+linux-prefix-hub --unignore-path "AppData/Local/SomeEngine/Cache"
+```
+
+Any part of a path works (`ShaderCache`, `.trace`), matched case-insensitively.
+Adding one also forgets what has already been recorded under it — except
+folders you have moved into your home folder, which are yours to undo with
+`--undo-redirect`.
+
 ## Looking a game up instead of playing it
 
 Not everything has to be learned the slow way — [PCGamingWiki][pcgw] already
@@ -216,6 +234,8 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --set-save-folder PATH         where moved saves are kept
   --add-game-folder PATH         also look for games there
   --forget-game-folder PATH      stop looking there
+  --ignore-path PATH             never report that path as a storage location
+  --unignore-path PATH           report it again
   --check-update / --update      Velopack
   --integrate                    recreate shims/service/menu entry
   --lang / --set-language        language for this run / permanently

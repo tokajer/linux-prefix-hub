@@ -110,6 +110,42 @@ DB is keyed by), so the answer waits in the cache until the first launch folds
 it in. Giving the user a way to correct a wrongly matched article would be the
 next useful step.
 
+## ✅ Granular file filters (`core/snapshot.py`)
+
+A session changes more than the save game. Aim Lab was the case that made this
+visible: DXVK 2.4+ writes its pipeline cache as `<hash>.dxvk.bin` plus a `.lut`
+into `AppData/Local/dxvk`, and since that is three path segments of its own,
+`classify_locations` reported it as a "config" **storage location** — not just
+noise in a file count, but a folder we offered to move into the user's home.
+
+- The `IGNORE_*` lists now come in three shapes (folder fragment, file name,
+  file suffix) and are shared between the two spaces where they apply to both.
+  Matching is against `"/" + rel_path`, so a fragment carries a slash on both
+  ends and `"/logs/"` cannot hit `mylogs/`.
+- `--ignore-path FRAGMENT` / `--unignore-path FRAGMENT` (config key
+  `ignore_paths`) for the rest, because every engine invents its own cache
+  folder and a built-in list can only ever hold the ones we have seen.
+
+The two decisions worth remembering:
+
+- **A filter has to clean up after itself.** One that only applies to future
+  launches leaves the junk it was written for sitting in the DB — and the user
+  who just typed `--ignore-path` sees nothing happen. `db.prune_locations`
+  drops what today's filters would never have recorded, at launch time (next
+  to `redirect.reapply`, the other self-heal) and immediately when a filter is
+  added. Anything with a `LOCATION_USER_FIELDS` value set is never touched:
+  a moved folder is a decision, and silently undoing it would leave a symlink
+  pointing at a folder nobody tracks any more.
+- **The rule and the invariant live apart.** "This is churn" belongs to
+  `snapshot`, "this is the user's" belongs to `db`, so `db.prune_locations`
+  takes the predicate as an argument and `snapshot` imports `db` lazily, in
+  one function, for the user's list. Neither module needs the other at import
+  time.
+
+Open: `AppData/Local/Epic Games` (163 files after a Rocket League session) is
+the EOS SDK's cache and still counts as a location. Vendor SDK folders are the
+next candidates, but they are a guess in a way `dxvk` is not.
+
 ## 🔭 Install-experience layer
 
 Mostly falls out of the watcher and discovery that already exist:
@@ -132,10 +168,6 @@ started.
 
 - **Bottles**: show as "detected, not managed"; full management only on
   request (the gaming overlap is small).
-
-## 🔭 More granular file filters.
-
-- **dxvk.bin Files**: we detect all file changes but for example in aimlab its a temp tirectory for dxvk.bin files. Should not be included.
 
 ## 🔭 Backlog
 

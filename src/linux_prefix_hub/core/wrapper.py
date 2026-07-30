@@ -111,10 +111,16 @@ def _snapshot_all(ctx: dict[str, Any]) -> Snapshots:
 
 
 def _before(ctx: dict[str, Any]) -> tuple[str, Snapshots]:
-    """Register the game, self-heal its redirections, snapshot."""
+    """Register the game, self-heal what we know about it, snapshot."""
     fingerprint = db.upsert_prefix(_entry_from_context(ctx))
     with contextlib.suppress(Exception):   # never block a launch
         redirect.reapply(fingerprint)
+    with contextlib.suppress(Exception):
+        # Locations a filter we have today would never have recorded --
+        # a shader cache from before that filter existed, or one the user
+        # has since added themselves. Separate suppress: a redirection that
+        # fails to reapply must not keep the junk around, and vice versa.
+        db.prune_locations(fingerprint, snapshot.location_is_noise)
     return fingerprint, _snapshot_all(ctx)
 
 

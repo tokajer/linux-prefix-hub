@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,37 @@ def forget_game_folder(path: str | Path) -> bool:
     if folder not in folders:
         return False
     set_config("game_folders", [f for f in folders if f != folder])
+    return True
+
+
+def extra_ignore_paths() -> list[str]:
+    """Path fragments that must never count as a storage location.
+
+    Kept as the user typed them; `snapshot.user_ignores` normalises. The
+    built-in list in `core/snapshot.py` covers the churn we have seen, this
+    is for the rest -- every engine invents its own cache folder.
+    """
+    value = load_config().get("ignore_paths")
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def add_ignore_path(fragment: str) -> bool:
+    """Remember a fragment to ignore. False if it was already remembered."""
+    frag = str(fragment).strip()
+    fragments = extra_ignore_paths()
+    if not frag or frag in fragments:
+        return False
+    set_config("ignore_paths", fragments + [frag])
+    return True
+
+
+def forget_ignore_path(fragment: str) -> bool:
+    """Drop a fragment again. False if it was not in the list."""
+    frag = str(fragment).strip()
+    fragments = extra_ignore_paths()
+    if frag not in fragments:
+        return False
+    set_config("ignore_paths", [f for f in fragments if f != frag])
     return True
 
 
@@ -235,6 +267,40 @@ def update_location(fp: str, win_path: str, where: str = "prefix",
             save_prefixes(db)
             return True
     return False
+
+
+def prune_locations(fp: str | None,
+                    is_noise: Callable[[dict[str, Any]], bool]) -> int:
+    """Forget storage locations that should never have been recorded.
+
+    `fp` names one game, `None` means all of them. Returns how many were
+    dropped. The rule itself lives in `core/snapshot.py`
+    (`location_is_noise`) -- a filter added today has to be able to clean up
+    after itself, or the shader cache somebody recorded last month stays a
+    "config" location forever.
+
+    What the user acted on is never offered to `is_noise`: a moved folder is
+    a decision, and undoing it silently would break the invariant at the top
+    of this file (and leave a symlink pointing at a folder nobody tracks).
+    """
+    db = load_prefixes()
+    entries = [e for f, e in db.items() if fp is None or f == fp]
+    dropped = 0
+    for entry in entries:
+        locations = entry.get("storage_locations", [])
+        kept = [loc for loc in locations
+                if _user_owned(loc) or not is_noise(loc)]
+        if len(kept) != len(locations):
+            dropped += len(locations) - len(kept)
+            entry["storage_locations"] = kept
+    if dropped:
+        save_prefixes(db)
+    return dropped
+
+
+def _user_owned(loc: dict[str, Any]) -> bool:
+    """Has the user acted on this location? Then it is not ours to remove."""
+    return any(loc.get(field) for field in LOCATION_USER_FIELDS)
 
 
 def set_managed(fp: str, managed: bool) -> bool:

@@ -10,6 +10,12 @@ locations with no prior knowledge ("learn" mode).
 Inside the prefix we only scan the relevant subtrees below drive_c/users to
 save IO -- that is where AppData/Documents/Saved Games/Downloads live.
 
+Not everything that changes during a session is worth reporting: shader
+caches, crash dumps and logs churn on every launch. The `IGNORE_*` lists
+below drop those, and `user_ignores()` lets the user add their own -- see
+`location_is_noise` for what happens to entries recorded before a filter
+existed.
+
 The **install folder** is scanned as a second, separate location space
 (`snapshot_game_dir`). Source-engine games are the classic case: Portal 2
 writes its saves to `steamapps/common/Portal 2/portal2/SAVE/<steamid>/` and
@@ -38,29 +44,48 @@ INTERESTING_SUBTREES = [
     "Downloads",
 ]
 
-# Churn that is never a save game: Wine/Windows scratch space. Matched as a
-# case-insensitive substring against the path relative to the user folder.
+# --- What is never a save game -------------------------------------------
+# Churn comes in three shapes, so the filters do too: a folder somewhere in
+# the path, a file name, a file suffix. Everything is matched
+# case-insensitively against "/" + the relative path, which is why the
+# fragments are written with a slash on both ends -- "/logs/" must not match
+# "mylogs/session.txt".
+
+# Both spaces. The graphics stack caches compiled shaders and pipelines under
+# a dozen names: DXVK 2.4+ writes "<hash>.dxvk.bin" plus a matching ".lut"
+# into %LOCALAPPDATA%\dxvk, older builds a "<exe>.dxvk-cache" next to the
+# binary, and every driver and embedded browser keeps a cache of its own.
+# The dxvk folder is the reason this list exists: it is the only churn that
+# was not merely inflating a file count but showing up as a storage location
+# in its own right (Aim Lab, reported as "config").
+IGNORE_ANY_FRAGMENTS = (
+    "/dxvk/", "/vkd3d/", "/d3dscache/", "/glcache/", "/gpucache/",
+    "/shadercache/", "/shader_cache/",
+    "/crashdumps/", "/crashpad/",
+    "/code cache/", "/cache_data/",
+)
+IGNORE_ANY_SUFFIXES = (".dxvk-cache", ".dxvk-cache-tmp", ".dxvk.bin",
+                       ".dxvk.lut", ".log", ".tmp", ".dmp", ".pyc")
+IGNORE_ANY_NAMES = ("steam_appid.txt", "steam_autocloud.vdf",
+                    ".steam_shortcut", "workshop_log.txt",
+                    "vkd3d-proton.cache", "vkd3d-proton.cache.write")
+
+# Prefix only: Wine/Windows scratch space, relative to the user folder.
 IGNORE_FRAGMENTS = (
-    "appdata/local/temp/",
-    "appdata/local/crashdumps/",
-    "appdata/local/microsoft/windows/inetcache/",
-    "appdata/local/microsoft/windows/explorer/",
-    "appdata/roaming/microsoft/windows/recent/",
-    "appdata/local/d3dscache/",
-    "appdata/local/nvidia/",
-    "appdata/local/amd/",
+    "/appdata/local/temp/",
+    "/appdata/local/microsoft/windows/",   # inetcache, cookies, history, ...
+    "/appdata/roaming/microsoft/windows/recent/",
+    "/microsoft/cryptneturlcache/",        # Local *and* LocalLow: unanchored
+    "/appdata/local/nvidia/",
+    "/appdata/local/amd/",
+    "/appdata/local/intel/",
+    "/appdata/local/cef/",                 # embedded-browser profile
 )
 
-
-# The same idea for the install folder, where the churn looks different:
-# logs, shader caches and the launcher's own bookkeeping.
+# Install folder only: the game's logs and the launcher's own bookkeeping.
 IGNORE_GAME_FRAGMENTS = (
-    "/shadercache/", "/shader_cache/", "/steamapps/downloading/",
-    "/crashes/", "/logs/",
+    "/steamapps/downloading/", "/crashes/", "/logs/",
 )
-IGNORE_GAME_SUFFIXES = (".log", ".tmp", ".dmp", ".pyc")
-IGNORE_GAME_NAMES = ("steam_appid.txt", "steam_autocloud.vdf",
-                     ".steam_shortcut", "workshop_log.txt")
 
 # An install folder is not a prefix: it can be hundreds of thousands of files.
 # Past this many we give up rather than delay a launch -- the prefix diff still
@@ -71,23 +96,65 @@ WHERE_PREFIX = "prefix"
 WHERE_GAME = "game_folder"
 
 
-def _ignored(rel: str) -> bool:
-    low = rel.replace("\\", "/").lower()
-    return any(frag in low for frag in IGNORE_FRAGMENTS)
-
-
-def _ignored_in_game_dir(rel: str) -> bool:
-    low = "/" + rel.replace("\\", "/").lower()
-    if any(frag in low for frag in IGNORE_GAME_FRAGMENTS):
+def _matches(rel: str, fragments: tuple[str, ...]) -> bool:
+    low = "/" + rel.replace("\\", "/").lstrip("/").lower()
+    if any(frag in low for frag in fragments):
+        return True
+    if any(frag in low for frag in IGNORE_ANY_FRAGMENTS):
         return True
     name = low.rpartition("/")[2]
-    return (name in IGNORE_GAME_NAMES
-            or name.endswith(IGNORE_GAME_SUFFIXES))
+    return name in IGNORE_ANY_NAMES or name.endswith(IGNORE_ANY_SUFFIXES)
+
+
+def _ignored(rel: str, extra: tuple[str, ...] = ()) -> bool:
+    return _matches(rel, IGNORE_FRAGMENTS + extra)
+
+
+def _ignored_in_game_dir(rel: str, extra: tuple[str, ...] = ()) -> bool:
+    return _matches(rel, IGNORE_GAME_FRAGMENTS + extra)
+
+
+def user_ignores() -> tuple[str, ...]:
+    """The fragments the user added on top (`ignore_paths` in config.json).
+
+    Every engine invents its own cache folder, so the built-in list above can
+    only ever be the ones we have seen. Read **once per snapshot**, never per
+    file: this sits on the launch path. `core/db.py` is imported lazily and
+    deliberately does not import us back -- "this is churn" is a rule of
+    detection, the user's decisions are the DB's business.
+    """
+    try:
+        from . import db
+        return tuple(str(p).replace("\\", "/").strip().lower()
+                     for p in db.extra_ignore_paths() if str(p).strip())
+    except Exception:
+        return ()
+
+
+def location_is_noise(loc: dict[str, Any]) -> bool:
+    """Is a *stored* location one that today's filters would never record?
+
+    A filter is worth little if it only applies to future launches:
+    `AppData/Local/dxvk` was recorded as a "config" location long before we
+    learned it is a shader cache, and it would sit in the DB forever. See
+    `db.prune_locations`, which acts on this (and protects what the user
+    decided).
+
+    A location is a directory, so the check gets a trailing "/" -- there is
+    no file name here, and the fragments carry a slash on both ends.
+    """
+    rel = str(loc.get("win_path", "")).replace("\\", "/").strip("/")
+    if not rel:
+        return False
+    check = (_ignored_in_game_dir if loc.get("where") == WHERE_GAME
+             else _ignored)
+    return check(rel + "/", user_ignores())
 
 
 def snapshot(prefix_path: str | Path, user_dir: str) -> dict[str, float]:
     """mtime snapshot of relevant files, keyed by path relative to user dir."""
     base = Path(prefix_path) / "drive_c" / "users" / user_dir
+    extra = user_ignores()
     result: dict[str, float] = {}
     for sub in INTERESTING_SUBTREES:
         root = base / sub
@@ -98,7 +165,7 @@ def snapshot(prefix_path: str | Path, user_dir: str) -> dict[str, float]:
                 if not p.is_file():
                     continue
                 rel = str(p.relative_to(base))
-                if _ignored(rel):
+                if _ignored(rel, extra):
                     continue
                 result[rel] = p.stat().st_mtime
             except OSError:
@@ -120,6 +187,7 @@ def snapshot_game_dir(game_dir: str | Path | None) -> dict[str, float] | None:
     base = Path(game_dir)
     if not base.is_dir():
         return None
+    extra = user_ignores()
     result: dict[str, float] = {}
     visited = 0
     for p in base.rglob("*"):
@@ -130,7 +198,7 @@ def snapshot_game_dir(game_dir: str | Path | None) -> dict[str, float] | None:
             if p.is_symlink() or not p.is_file():
                 continue
             rel = str(p.relative_to(base))
-            if _ignored_in_game_dir(rel):
+            if _ignored_in_game_dir(rel, extra):
                 continue
             result[rel] = p.stat().st_mtime
         except OSError:

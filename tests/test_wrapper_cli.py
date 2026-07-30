@@ -42,6 +42,22 @@ def test_hooks_learn_the_storage_location(context):
                for loc in entry["storage_locations"])
 
 
+def test_a_launch_forgets_a_location_a_filter_now_covers(context):
+    """Self-heal, next to `redirect.reapply`: the filters we ship grow."""
+    from linux_prefix_hub.core import db, wrapper
+    _ctx, prefix = context
+    fingerprint = db.fingerprint(prefix)
+    db.upsert_prefix({
+        "source": "lutris", "app_id": "quake", "game_name": "Quake",
+        "prefix_path": str(prefix), "user_dir": "steamuser",
+        "storage_locations": [
+            {"type": "config", "win_path": "AppData/Local/dxvk"}]})
+
+    assert wrapper.hook("pre", "lutris", "quake") == 0
+
+    assert db.get_prefix(fingerprint)["storage_locations"] == []
+
+
 def test_hook_without_a_prefix_is_not_an_error(monkeypatch):
     from linux_prefix_hub.adapters import base
     from linux_prefix_hub.core import wrapper
@@ -334,6 +350,31 @@ def test_save_folder_is_configurable(monkeypatch, capsys, isolated_home):
     assert db.redirect_root() == isolated_home / "Spielstaende"
     assert redirect.default_target("Quake", "Documents") == \
         isolated_home / "Spielstaende/Quake/Documents"
+
+
+def test_ignoring_a_path_cleans_up_what_was_already_recorded(monkeypatch,
+                                                             capsys,
+                                                             tmp_path):
+    """Typing this is usually about a folder the user is looking at now."""
+    from linux_prefix_hub.core import db
+    fingerprint = db.upsert_prefix({
+        "source": "steam", "app_id": "620", "game_name": "Portal 2",
+        "prefix_path": str(tmp_path / "pfx"), "user_dir": "steamuser",
+        "storage_locations": [
+            {"type": "config", "win_path": "AppData/Roaming/Telemetry"},
+            {"type": "saves", "win_path": "Documents/Portal 2"}]})
+
+    assert _run(monkeypatch, "--ignore-path", "AppData/Roaming/Telemetry") == 0
+    out = capsys.readouterr().out
+    assert "Ignoring" in out and "1 known location" in out
+
+    stored = [loc["win_path"]
+              for loc in db.get_prefix(fingerprint)["storage_locations"]]
+    assert stored == ["Documents/Portal 2"]
+
+    assert _run(monkeypatch, "--unignore-path",
+                "AppData/Roaming/Telemetry") == 0
+    assert db.extra_ignore_paths() == []
 
 
 def test_the_default_save_folder_is_our_own(isolated_home):

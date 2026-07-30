@@ -243,6 +243,30 @@ def _cmd_game_folder(path: str, forget: bool) -> None:
           else _("{path} is already in the list.", path=full))
 
 
+def _cmd_ignore_path(fragment: str, forget: bool) -> None:
+    """Add (or drop) a filter for paths that are never a storage location.
+
+    Adding one cleans up straight away instead of only from the next launch:
+    the point of typing this is usually a folder the user is looking at right
+    now. Anything already moved into the home folder stays -- see
+    `db.prune_locations`.
+    """
+    from .core import db, snapshot
+    if forget:
+        print(_("'{path}' counts as a storage location again.", path=fragment)
+              if db.forget_ignore_path(fragment)
+              else _("'{path}' was not on the ignore list.", path=fragment))
+        return
+    if not db.add_ignore_path(fragment):
+        print(_("'{path}' is already ignored.", path=fragment))
+        return
+    print(_("Ignoring '{path}' from now on.", path=fragment))
+    dropped = db.prune_locations(None, snapshot.location_is_noise)
+    if dropped:
+        print(_("{n} known location(s) matched and were forgotten.",
+                n=dropped))
+
+
 def _cmd_update(install: bool) -> int:
     from .core import updater
     if install:
@@ -485,6 +509,10 @@ def _build_parser() -> Any:
                    help=_("also look for games in this folder"))
     p.add_argument("--forget-game-folder", metavar="PATH",
                    help=_("stop looking for games in that folder"))
+    p.add_argument("--ignore-path", metavar="PATH",
+                   help=_("never report this path as a storage location"))
+    p.add_argument("--unignore-path", metavar="PATH",
+                   help=_("report that path again"))
     p.add_argument("--source", choices=SOURCES,
                    help=_("limit to one launcher"))
     p.add_argument("--target", metavar="PATH",
@@ -581,6 +609,14 @@ def main() -> int:
             _cmd_game_folder(parsed.add_game_folder, forget=False)
         if parsed.forget_game_folder:
             _cmd_game_folder(parsed.forget_game_folder, forget=True)
+        if not any(getattr(parsed, name) for name in other_commands):
+            return 0
+
+    if parsed.ignore_path or parsed.unignore_path:
+        if parsed.ignore_path:
+            _cmd_ignore_path(parsed.ignore_path, forget=False)
+        if parsed.unignore_path:
+            _cmd_ignore_path(parsed.unignore_path, forget=True)
         if not any(getattr(parsed, name) for name in other_commands):
             return 0
 

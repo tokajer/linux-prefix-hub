@@ -81,6 +81,44 @@ def test_snapshot_ignores_wine_scratch_space(tmp_path):
     assert taken == {}
 
 
+def test_snapshot_ignores_the_shader_cache(tmp_path):
+    """The Aim Lab case: DXVK's pipeline cache was a "config" location.
+
+    It sits in AppData/Local/dxvk, so nothing about the path says cache --
+    only the folder name and the file suffixes do.
+    """
+    from linux_prefix_hub.core import snapshot
+    udir = tmp_path / "drive_c/users/steamuser"
+    cache = udir / "AppData/Local/dxvk"
+    cache.mkdir(parents=True)
+    (cache / "3ba4b7fe7ec2e254.dxvk.bin").write_text("x")
+    (cache / "3ba4b7fe7ec2e254.dxvk.lut").write_text("x")
+    game = udir / "AppData/LocalLow/Statespace/aimlab_tb"
+    game.mkdir(parents=True)
+    (game / "prefs.bin").write_text("settings")
+    (game / "Player.log").write_text("noise")
+
+    taken = snapshot.snapshot(tmp_path, "steamuser")
+
+    assert list(taken) == ["AppData/LocalLow/Statespace/aimlab_tb/prefs.bin"]
+
+
+def test_a_filter_the_user_added_is_applied(tmp_path):
+    from linux_prefix_hub.core import db, snapshot
+    udir = tmp_path / "drive_c/users/steamuser"
+    for name in ("Documents/Game/save.sav", "Documents/Game/telemetry/a.dat"):
+        path = udir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+
+    assert db.add_ignore_path("Documents/Game/telemetry")
+    assert list(snapshot.snapshot(tmp_path, "steamuser")) == [
+        "Documents/Game/save.sav"]
+
+    assert db.forget_ignore_path("Documents/Game/telemetry")
+    assert len(snapshot.snapshot(tmp_path, "steamuser")) == 2
+
+
 def test_snapshot_finds_saves_in_the_install_folder(tmp_path):
     """The Portal 2 case: nothing in the prefix, saves in the game folder."""
     from linux_prefix_hub.core import snapshot
@@ -198,6 +236,24 @@ def test_db_merges_new_locations(tmp_path):
     paths = {loc["win_path"]
              for loc in db.get_prefix(fingerprint)["storage_locations"]}
     assert paths == {"Documents/CP", "AppData/Local/CP"}
+
+
+def test_a_new_filter_forgets_what_it_should_never_have_recorded(tmp_path):
+    """A filter that only applies to future launches is barely a filter."""
+    from linux_prefix_hub.core import db, snapshot
+    fingerprint = db.upsert_prefix(_entry(tmp_path, storage_locations=[
+        {"type": "config", "win_path": "AppData/Local/dxvk"},
+        {"type": "saves", "win_path": "Documents/Game"},
+        # The user moved this one, so it stays even though it matches.
+        {"type": "config", "win_path": "AppData/Local/Temp/keepme",
+         "redirected": True, "redirect_target": "/home/me/Games/X"},
+    ]))
+
+    assert db.prune_locations(fingerprint, snapshot.location_is_noise) == 1
+
+    stored = {loc["win_path"]
+              for loc in db.get_prefix(fingerprint)["storage_locations"]}
+    assert stored == {"Documents/Game", "AppData/Local/Temp/keepme"}
 
 
 # --- opening a folder ----------------------------------------------------
