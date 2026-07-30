@@ -234,6 +234,35 @@ def test_redirect_explains_why_it_cannot_move_the_game_folder(monkeypatch,
     assert "its own folder" in out and "--open" in out
 
 
+def test_version_shows_the_licence_notice(monkeypatch, capsys):
+    """GPL section 5d: an interactive program says who owns it, under what
+    terms, and that there is no warranty. argparse would re-wrap all four
+    lines into one paragraph, hence our own action."""
+    import pytest as _pytest
+
+    from linux_prefix_hub import __version__
+    with _pytest.raises(SystemExit) as exit_info:
+        _run(monkeypatch, "--version")
+    assert exit_info.value.code == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].endswith(__version__)
+    assert "Copyright (C)" in lines[1]
+    assert "GPL-3.0-or-later" in lines[2]
+    assert "NO WARRANTY" in "\n".join(lines)
+
+
+def test_the_licence_file_is_the_gpl(monkeypatch):
+    """The metadata must not promise terms the LICENSE does not carry."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "LICENSE").read_text(encoding="utf-8")
+    assert "GNU GENERAL PUBLIC LICENSE" in text
+    assert "Version 3, 29 June 2007" in text
+    assert "GPL-3.0-or-later" in (root / "pyproject.toml").read_text(
+        encoding="utf-8")
+
+
 def test_open_falls_back_to_the_game_folder(monkeypatch, capsys, fake_prefix):
     """Nothing learned yet -- then the game folder is the answer."""
     from linux_prefix_hub.adapters import base

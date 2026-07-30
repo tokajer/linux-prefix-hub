@@ -159,5 +159,6 @@
   "Looking a game up asks PCGamingWiki where it keeps its saves, so you do not have to play it first. It only happens when you ask for it.": "Beim Nachschlagen fragen wir PCGamingWiki, wo ein Spiel seine Spielstände ablegt -- dann musst du es nicht erst spielen. Das passiert nur, wenn du es anstößt.",
   "Allow looking games up online": "Spiele online nachschlagen erlauben",
   "Game folder": "Spielordner",
-  "Opening the game folder {path}": "Öffne den Spielordner {path}"
+  "Opening the game folder {path}": "Öffne den Spielordner {path}",
+  "show the version and the licence": "Version und Lizenz anzeigen"
 }

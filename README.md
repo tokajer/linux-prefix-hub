@@ -305,4 +305,12 @@ Marked in the code at the relevant spots:
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+Copyright © 2026 tokajer.
+
+GNU General Public License, version 3 or later — see [LICENSE](LICENSE). This
+program comes with **absolutely no warranty**; you are free to redistribute it
+and to change it under those terms.
+
+The AppImage bundles a CPython interpreter (PSF licence) and, in the release
+build, Velopack (MIT); the window uses the system's PyGObject/GTK (LGPL). All
+of those may be combined with GPLv3 code.

@@ -8,13 +8,13 @@ version = "0.3.0"
 description = "Know where your Windows games on Linux store their saves -- and move those saves into your home folder"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "tokajer" }]
 keywords = ["wine", "proton", "steam", "lutris", "heroic", "savegames"]
 classifiers = [
   "Environment :: X11 Applications :: GTK",
   "Intended Audience :: End Users/Desktop",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Topic :: Games/Entertainment",

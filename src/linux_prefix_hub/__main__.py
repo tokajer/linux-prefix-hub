@@ -428,6 +428,40 @@ def _cmd_default() -> int:
 
 
 # --- entry point ---------------------------------------------------------
+COPYRIGHT = "Copyright (C) 2026 tokajer"
+LICENSE_NOTICE = (
+    "License GPL-3.0-or-later: GNU GPL version 3 or later "
+    "<https://gnu.org/licenses/gpl.html>\n"
+    "This is free software: you are free to change and redistribute it.\n"
+    "There is NO WARRANTY, to the extent permitted by law.")
+
+
+def version_text() -> str:
+    """`--version`: the short notice the GPL asks an interactive program to
+    show (section 5d). The window says the same in its About dialog.
+
+    English on purpose -- a licence notice is not UI text, and translating a
+    legal statement is how you end up saying something you did not mean.
+    """
+    from .core import paths
+    return f"{paths.APP_TITLE} {__version__}\n{COPYRIGHT}\n{LICENSE_NOTICE}"
+
+
+def _version_action() -> Any:
+    """argparse's own `version` action re-wraps the text it is given, which
+    folds the four-line notice into one paragraph. So we print it ourselves.
+    """
+    import argparse
+
+    class VersionAction(argparse.Action):
+        def __call__(self, parser: Any, namespace: Any, values: Any,
+                     option_string: str | None = None) -> None:
+            print(version_text())
+            parser.exit()
+
+    return VersionAction
+
+
 def _build_parser() -> Any:
     import argparse
 
@@ -480,8 +514,8 @@ def _build_parser() -> Any:
                    help=_("ask GitHub whether a newer version exists"))
     g.add_argument("--update", action="store_true",
                    help=_("download and install the newest version"))
-    p.add_argument("--version", action="version",
-                   version=f"{paths.APP_TITLE} {__version__}")
+    p.add_argument("--version", action=_version_action(), nargs=0,
+                   help=_("show the version and the licence"))
     return p
 
 

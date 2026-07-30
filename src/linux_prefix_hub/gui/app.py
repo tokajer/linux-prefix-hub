@@ -690,7 +690,8 @@ class LphApplication(Adw.Application):
             comments=_("Find out where your games store their saves -- and "
                        "keep those saves in your home folder."),
             website="https://github.com/tokajer/linux-prefix-hub",
-            license_type=Gtk.License.MIT_X11)
+            copyright="© 2026 tokajer",
+            license_type=Gtk.License.GPL_3_0)
         about.present(self._window)
 
 
