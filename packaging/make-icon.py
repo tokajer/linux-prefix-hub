@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Render the app icon as a PNG -- no image library required.
 
 The build needs exactly one PNG in the AppDir, and pulling Pillow into the

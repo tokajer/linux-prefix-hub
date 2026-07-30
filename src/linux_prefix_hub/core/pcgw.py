@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Known storage locations from PCGamingWiki.
 
 The diff in `core/snapshot.py` only learns where a game saves *after* it has

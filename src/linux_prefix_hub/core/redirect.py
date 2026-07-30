@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Hybrid redirection: registry entry + symlink, pointing at the same target.
 
 Why both?

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Minimal parser/writer for Valve's KeyValues format (.acf / text .vdf).
 
 Deliberately small: appmanifest_*.acf, libraryfolders.vdf and localconfig.vdf

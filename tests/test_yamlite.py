@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """The dependency-free YAML subset.
 
 CI runs the suite once without optional extras, so these tests must exercise

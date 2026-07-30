@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Generic adapter: game folders no launcher knows about.
 
 Hand-rolled setups -- `WINEPREFIX=~/.wine wine setup.exe`, a folder winetricks

@@ -1,10 +1,12 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "linux-prefix-hub"
-version = "0.3.0"
+# The release tag is the version -- see src/linux_prefix_hub/__init__.py.
+# Nothing here or in the code carries a number that a tag could contradict.
+dynamic = ["version"]
 description = "Know where your Windows games on Linux store their saves -- and move those saves into your home folder"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,6 +53,14 @@ Issues = "https://github.com/tokajer/linux-prefix-hub/issues"
 # because nobody wants to type the long one twice.
 linux-prefix-hub = "linux_prefix_hub.__main__:main"
 prefixhub = "linux_prefix_hub.__main__:main"
+
+[tool.hatch.version]
+source = "vcs"                    # git describe, i.e. the tag
+
+# The same generated file the packaging scripts write, so an installed wheel
+# and the AppImage learn their version the same way.
+[tool.hatch.build.hooks.vcs]
+version-file = "src/linux_prefix_hub/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/linux_prefix_hub"]

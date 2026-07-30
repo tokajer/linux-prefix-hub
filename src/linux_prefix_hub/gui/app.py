@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """GTK4 / libadwaita front-end.
 
 Sits on the same logic the CLI uses -- `base.iter_games()`, `adapter.connect()`

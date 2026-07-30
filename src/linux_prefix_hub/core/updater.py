@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Self-update via Velopack.
 
 Velopack owns both ends of this: `vpk pack` builds the AppImage (see
@@ -63,8 +66,14 @@ def parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts) or (0,)
 
 
-def is_newer(remote: str, local: str = __version__) -> bool:
-    return parse_version(remote) > parse_version(local)
+def is_newer(remote: str, local: str | None = None) -> bool:
+    """Is `remote` a newer release than what we are?
+
+    `local` is read at call time, not bound as a default: the version now
+    comes from the release tag (see the package's `__init__`), so the one
+    place that must not freeze an early copy of it is the comparison.
+    """
+    return parse_version(remote) > parse_version(local or __version__)
 
 
 def app_hook() -> None:

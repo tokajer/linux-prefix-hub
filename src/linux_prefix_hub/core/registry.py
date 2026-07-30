@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Reading and writing shell-folder entries in a prefix' `user.reg`.
 
 This is the "official" half of the hybrid redirection (see redirect.py): tell

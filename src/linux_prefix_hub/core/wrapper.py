@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """The launch hook -- the one place where we learn what a game does.
 
 Two shapes, same job:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Heroic adapter: discovery from GamesConfig JSON, hook via wrapperOptions.
 
 Heroic stores one JSON file per game under `GamesConfig/<appName>.json` and

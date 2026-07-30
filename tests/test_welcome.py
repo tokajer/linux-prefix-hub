@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Setup flow: the decisions, not the printing.
 
 The split in `gui/welcome.py` exists so the GTK front-end can reuse exactly

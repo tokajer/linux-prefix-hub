@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Build a local, dotnet-free AppImage. NOT the release pipeline.
 #
 # Releases are built by `build-velopack.sh`, because Velopack owns both the
@@ -32,12 +35,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${ROOT}/build"
 APPDIR="${BUILD}/${APP}.AppDir"
 
+# The version comes from the release tag, never from the source. Without an
+# argument we ask git; without a tag it is a development build and says so.
 VERSION="${1:-}"
 if [ -z "${VERSION}" ]; then
-  VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' \
-    "${ROOT}/src/linux_prefix_hub/__init__.py")"
+  VERSION="$(git -C "${ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
 fi
 VERSION="${VERSION#v}"
+VERSION="${VERSION:-0.0.0}"
 OUT="${BUILD}/${APP}-${VERSION}-${ARCH}.AppImage"
 
 # AppImages cannot be mounted on most CI runners (no FUSE) -- this makes the
@@ -83,6 +88,14 @@ find "${SITE_PACKAGES}/linux_prefix_hub" -name '__pycache__' -type d \
 # Keep a copy on PYTHONPATH too, so AppRun still works if the layout changes.
 mkdir -p "${APPDIR}/usr/lib/python"
 cp -r "${ROOT}/src/linux_prefix_hub" "${APPDIR}/usr/lib/python/"
+
+# Stamp the version in. The package itself carries none (see its __init__),
+# so this file is the only place the shipped build learns what it is.
+for target in "${SITE_PACKAGES}/linux_prefix_hub" \
+              "${APPDIR}/usr/lib/python/linux_prefix_hub"; do
+  printf 'version = "%s"\n__version__ = version\n' "${VERSION}" \
+    > "${target}/_version.py"
+done
 
 # --- 3. AppDir metadata ---------------------------------------------------
 say "Writing AppRun, desktop entry and icon"

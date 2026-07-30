@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Adapters: discovery and hook injection against fake launcher installs."""
 from __future__ import annotations
 

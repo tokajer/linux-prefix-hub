@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Self-integration: the one-time setup step.
 
 Solves the wandering-path problem: the AppImage copies itself to a fixed

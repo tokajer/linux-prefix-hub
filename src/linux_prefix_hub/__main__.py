@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Single-binary entry point with several modes.
 
 Matches the AppImage concept: ONE artifact, several modes.

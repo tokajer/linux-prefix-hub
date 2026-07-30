@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Self-update: version maths, caching, and the Velopack hand-over.
 
 No test here touches the network or the real Velopack SDK. `_manager` is
@@ -111,10 +114,24 @@ def test_check_reports_and_caches(fake_velopack):
     assert manager.calls == ["check"]
 
 
-def test_check_ignores_an_older_remote_version(fake_velopack):
+def test_check_ignores_an_older_remote_version(fake_velopack, monkeypatch):
+    """Pinned on purpose: our own version comes from the release tag, and a
+    checkout has none -- so the test must say what "we" are."""
     from linux_prefix_hub.core import updater
+    monkeypatch.setattr(updater, "__version__", "1.2.3")
     fake_velopack(FakeManager("0.0.1"))
     assert updater.check(force=True)["available"] is False
+
+
+def test_a_checkout_counts_as_older_than_any_release(fake_velopack):
+    """A working copy is not a release, so everything published beats it.
+
+    Harmless in practice -- `update()` refuses to touch anything but the
+    AppImage build -- and the honest answer to "which release is this?".
+    """
+    from linux_prefix_hub import DEV_VERSION
+    from linux_prefix_hub.core import updater
+    assert updater.is_newer("0.0.1", DEV_VERSION) is True
 
 
 def test_check_survives_being_offline(fake_velopack):

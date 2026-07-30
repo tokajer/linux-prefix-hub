@@ -522,7 +522,8 @@ it disabled without a second code path.
 
 - **`ci.yml`** — ruff + pytest on 3.10 and 3.12, once without and once with
   the optional extras (the dependency-free path must keep working).
-- **`release.yml`** — on a `v*` tag: verify the tag matches `__version__`,
-  install the .NET SDK and `vpk`, build, smoke-test the AppImage in a
-  throwaway HOME, publish **all** of `build/release/` — that directory is the
-  update feed, and uploading only the AppImage breaks `--update`.
+- **`release.yml`** — on a `v*` tag: take the version *from the tag*, install
+  the .NET SDK and `vpk`, build, smoke-test the AppImage in a throwaway HOME
+  (including that it reports the tag as its version), publish **all** of
+  `build/release/` — that directory is the update feed, and uploading only the
+  AppImage breaks `--update`.

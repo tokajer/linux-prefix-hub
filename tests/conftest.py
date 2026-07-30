@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Every test runs against a throwaway HOME.
 
 `core/paths.py` resolves its constants at import time, so we point HOME and

@@ -5,6 +5,10 @@ dist/
 *.zsync
 SHA256SUMS
 
+# Generated from the release tag at build time, never committed -- see
+# src/linux_prefix_hub/__init__.py.
+src/linux_prefix_hub/_version.py
+
 # Python
 __pycache__/
 *.py[cod]

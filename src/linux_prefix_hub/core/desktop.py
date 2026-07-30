@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Talking to the desktop environment -- currently: open a folder.
 
 Kept out of `gui/` on purpose. The GUI is presentation, and "show me this

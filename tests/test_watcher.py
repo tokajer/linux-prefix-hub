@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """New-game watcher: the set logic, without inotify or a real desktop.
 
 `run()`/`run_poll()` loop forever, so the tests drive the pieces they are

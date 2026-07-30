@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Lutris adapter: discovery via pga.db/YAML, hooks via prelaunch/postexit.
 
 Lutris is the friendly source: it has real hooks, so unlike Steam there is no

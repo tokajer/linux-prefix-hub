@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """The launch hook and the command line -- the two things users touch."""
 from __future__ import annotations
 
@@ -250,6 +253,25 @@ def test_version_shows_the_licence_notice(monkeypatch, capsys):
     assert "Copyright (C)" in lines[1]
     assert "GPL-3.0-or-later" in lines[2]
     assert "NO WARRANTY" in "\n".join(lines)
+
+
+def test_no_version_is_written_down_anywhere(monkeypatch):
+    """The release tag is the version. A number in the source is a number
+    that can contradict the tag -- which is exactly what broke a release."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    init = (root / "src/linux_prefix_hub/__init__.py").read_text(
+        encoding="utf-8")
+    assert '__version__ = "' not in init          # derived, never assigned
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'dynamic = ["version"]' in pyproject
+    assert "\nversion = " not in pyproject
+
+    for script in ("build-appimage.sh", "build-velopack.sh"):
+        text = (root / "packaging" / script).read_text(encoding="utf-8")
+        # They write the version in, they no longer read it out.
+        assert "_version.py" in text
+        assert "s/^__version__" not in text
 
 
 def test_the_licence_file_is_the_gpl(monkeypatch):

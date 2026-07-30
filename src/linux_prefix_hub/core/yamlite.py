@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Just enough YAML to read Lutris game configs -- dependency-free.
 
 Lutris config files are flat, boring YAML: two or three levels of mappings,

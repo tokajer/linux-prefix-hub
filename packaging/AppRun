@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # AppRun -- entry point inside the AppImage.
 #
 # $APPIMAGE is set by the AppImage runtime and points at the .AppImage file at

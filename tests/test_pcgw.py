@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """PCGamingWiki lookup: parsing, mapping, cache, and what the DB gets.
 
 The wikitext samples are real (trimmed) article source, because the parser's

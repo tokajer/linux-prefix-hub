@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Core: VDF, snapshots, the prefix DB and the translation layer."""
 from __future__ import annotations
 

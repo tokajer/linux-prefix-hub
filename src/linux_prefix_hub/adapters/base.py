@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Common ground for all source adapters (Steam, Lutris, Heroic, generic).
 
 A source adapter does exactly three things:

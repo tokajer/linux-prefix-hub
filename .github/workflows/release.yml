@@ -25,7 +25,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # tags, so a build can derive its own version
 
+      # The tag *is* the version -- nothing in the source carries one that
+      # could contradict it, so there is nothing left to check here. The
+      # build stamps this number into the bundle and the smoke test below
+      # reads it back out of the finished artifact.
       - name: Resolve version
         id: version
         run: |
@@ -34,18 +40,9 @@ jobs:
           else
             VERSION="${GITHUB_REF_NAME#v}"
           fi
+          VERSION="${VERSION#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Check the tag matches __version__
-        run: |
-          CODE="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' \
-            src/linux_prefix_hub/__init__.py)"
-          if [ "${CODE}" != "${{ steps.version.outputs.version }}" ]; then
-            echo "Tag says ${{ steps.version.outputs.version }}, code says ${CODE}." >&2
-            echo "Bump __version__ (and pyproject) before tagging." >&2
-            exit 1
-          fi
 
       # vpk is a .NET tool: it builds the AppImage and the release feed that
       # core/updater.py reads.
@@ -67,7 +64,16 @@ jobs:
           APP="$(ls build/release/*.AppImage | head -n1)"
           chmod +x "$APP"
           # Runs in a throwaway HOME so the self-heal cannot touch the runner.
-          HOME="$(mktemp -d)" "$APP" --version
+          BUILT="$(HOME="$(mktemp -d)" "$APP" --version | head -n1)"
+          echo "$BUILT"
+          # The artifact must report the tag it was built from: this is what
+          # `--update` compares against, so a wrong number here means every
+          # user is told they are up to date forever.
+          case "$BUILT" in
+            *" ${{ steps.version.outputs.version }}") ;;
+            *) echo "Built artifact says '$BUILT', tag says \
+${{ steps.version.outputs.version }}." >&2; exit 1 ;;
+          esac
           HOME="$(mktemp -d)" "$APP" --scan
 
       - uses: actions/upload-artifact@v4

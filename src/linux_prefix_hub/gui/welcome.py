@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Welcome / setup flow.
 
 Terminal version for now. The graphical version (GTK4/libadwaita) will sit on

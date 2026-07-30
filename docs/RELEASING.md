@@ -5,22 +5,28 @@ One tag, everything else is automatic. Releases are built and updated by
 never drift apart.
 
 ```bash
-# 1. bump the version in both places (they are checked against the tag)
-#    src/linux_prefix_hub/__init__.py   __version__ = "0.3.0"
-#    pyproject.toml                     version = "0.3.0"
-
-# 2. commit, tag, push
-git commit -am "release: 0.3.0"
-git tag v0.3.0
-git push origin main v0.3.0
+git tag v0.1.0
+git push origin main v0.1.0
 ```
+
+That is the whole procedure. **The tag is the version** — nothing in the
+source carries one, so there is nothing to bump and nothing that could
+disagree with the tag:
+
+| Where | How it learns the version |
+|---|---|
+| the AppImage | `packaging/build-*.sh` writes `_version.py` into the bundle |
+| a wheel (`pip install .`) | hatch-vcs, from `git describe` |
+| a plain checkout | neither exists → `0.0.0+dev` (see `__init__.py`) |
 
 `.github/workflows/release.yml` then:
 
-1. checks the tag matches `__version__` (and fails loudly if not),
+1. takes the version from the tag (`v1.2.3` → `1.2.3`),
 2. installs the .NET SDK and the `vpk` tool,
-3. runs `packaging/build-velopack.sh`,
-4. smoke-tests the AppImage (`--version`, `--scan`) in a throwaway HOME,
+3. runs `packaging/build-velopack.sh` with that version,
+4. smoke-tests the AppImage in a throwaway HOME — including that its
+   `--version` really reports the tag, because that number is what `--update`
+   compares against,
 5. publishes **everything** in `build/release/` to the GitHub release.
 
 Step 5 matters: the directory *is* the update feed. Uploading only the
@@ -85,6 +91,8 @@ old zsync setup, nothing about the feed is baked into the binary.
 ## Checklist before tagging
 
 - [ ] `pytest -q` and `ruff check src tests` are green
-- [ ] version bumped in `__init__.py` **and** `pyproject.toml`
 - [ ] README/docs mention anything new
 - [ ] built locally at least once and run with a throwaway HOME
+- [ ] the tag is the number you actually want — it is the only place the
+      version exists, so a wrong tag is a wrong release (delete it, tag
+      again; the workflow re-runs on the new one)

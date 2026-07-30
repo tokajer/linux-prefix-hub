@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Run blocking work off the GTK main loop.
 
 Discovery walks several disks, connecting rewrites launcher configs and a

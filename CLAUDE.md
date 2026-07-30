@@ -35,6 +35,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | File | Responsibility |
 |---|---|
 | `__main__.py` | CLI. `--wrapper/--hook/--daemon` dispatch **before** argparse (launch path stays cheap), rest via argparse |
+| `__init__.py` | `__version__`, **derived** — generated `_version.py` (build) > install metadata > `0.0.0+dev`. The release tag is the only version there is |
 | `core/paths.py` | Every persistent path. Constants resolved at **import** time (tests reload it) |
 | `core/i18n.py` | `_()`; English source strings, `locales/de.json` catalog, `LPH_LANG` > config > `LANG` |
 | `core/db.py` | `prefixes.json`. `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS` |

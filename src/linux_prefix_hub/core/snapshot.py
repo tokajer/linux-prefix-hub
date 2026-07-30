@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Diff-based detection of where a game stores its data.
 
 Principle: snapshot the prefix before the game starts, snapshot it after the

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Watcher: reports newly installed games.
 
 Steam is watched with inotify on every library's steamapps directory (an

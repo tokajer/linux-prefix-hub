@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 tokajer
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Build the release with Velopack. This is the official pipeline.
 #
 # What it does:
@@ -43,12 +46,17 @@ BUILD="${ROOT}/build"
 PACKDIR="${BUILD}/pack"
 OUTDIR="${BUILD}/release"
 
+# The version comes from the release tag, never from the source. Without an
+# argument we ask git; without a tag there is nothing to release.
 VERSION="${1:-}"
 if [ -z "${VERSION}" ]; then
-  VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' \
-    "${ROOT}/src/linux_prefix_hub/__init__.py")"
+  VERSION="$(git -C "${ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
 fi
 VERSION="${VERSION#v}"
+if [ -z "${VERSION}" ]; then
+  echo "No version given and no tag found. Pass one, or tag first." >&2
+  exit 1
+fi
 
 export APPIMAGE_EXTRACT_AND_RUN=1
 
@@ -109,6 +117,12 @@ rm -rf "${SITE_PACKAGES}/linux_prefix_hub"
 cp -r "${ROOT}/src/linux_prefix_hub" "${SITE_PACKAGES}/linux_prefix_hub"
 find "${SITE_PACKAGES}/linux_prefix_hub" -name '__pycache__' -type d \
   -exec rm -rf {} + 2>/dev/null || true
+
+# Stamp the version in. The package carries none of its own (see its
+# __init__), so this is where the shipped build learns what vpk called it --
+# and `updater.check` compares against exactly this number.
+printf 'version = "%s"\n__version__ = version\n' "${VERSION}" \
+  > "${SITE_PACKAGES}/linux_prefix_hub/_version.py"
 
 # velopack ships an abi3 wheel (cp37-abi3), so the host pip can place it into
 # the bundled interpreter's site-packages without building anything.
