@@ -186,6 +186,25 @@ def install_systemd_unit(enable: bool = True) -> Path:
     return paths.WATCHER_UNIT
 
 
+def install_icon() -> Path | None:
+    """Put the icon where the desktop looks for it by name.
+
+    The menu entry says `Icon=linux-prefix-hub` and the About dialog asks for
+    the same name; neither carries the image itself. Without a file in the
+    icon theme both fall back to a blank placeholder -- which is exactly what
+    the application menu showed. hicolor/256x256/apps is the per-user search
+    path every desktop reads, no cache refresh needed.
+    """
+    if not paths.ICON_SOURCE.exists():
+        return None                    # nothing to install (source layout)
+    try:
+        paths.ICON_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(paths.ICON_SOURCE, paths.ICON_FILE)
+    except OSError:
+        return None                    # a missing icon must not fail setup
+    return paths.ICON_FILE
+
+
 def install_desktop_entry() -> Path | None:
     """Application-menu entry. Skipped when GearLever manages the app."""
     if detect_gearlever():
@@ -215,6 +234,7 @@ def full_setup(enable_watcher: bool = True) -> dict[str, str]:
     appimg = relocate_appimage()
     shims = install_shims()
     unit = install_systemd_unit(enable=enable_watcher)
+    icon = install_icon()
     desktop = install_desktop_entry()
     return {
         "appimage": str(appimg) if appimg else "(dev mode, no relocation)",
@@ -224,4 +244,5 @@ def full_setup(enable_watcher: bool = True) -> dict[str, str]:
         "daemon_shim": str(shims["daemon"]),
         "systemd_unit": str(unit),
         "desktop_entry": str(desktop) if desktop else "(managed by GearLever)",
+        "icon": str(icon) if icon else "(not shipped with this build)",
     }

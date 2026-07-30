@@ -9,6 +9,9 @@ build just to draw a folder with an arrow would be silly. This draws it with
 signed distance fields and writes the PNG with zlib, which is stdlib.
 
 Usage:  python3 packaging/make-icon.py [out.png] [size]
+
+The checked-in copy lives in `src/linux_prefix_hub/data/` -- it ships with
+the package so `core/integrate.py` can install it into the icon theme.
 """
 from __future__ import annotations
 

@@ -249,7 +249,10 @@ head -c 4 "${MAIN_EXE}" | grep -q 'ELF' || {
   exit 1
 }
 
-ICON="${ROOT}/packaging/linux-prefix-hub.png"
+# The icon lives in the package, not here: the app installs it into the
+# icon theme at setup time, so the menu entry and the About dialog can
+# find it by name. The build just hands the same file to vpk.
+ICON="${ROOT}/src/linux_prefix_hub/data/linux-prefix-hub.png"
 [ -f "${ICON}" ] || python3 "${ROOT}/packaging/make-icon.py" "${ICON}"
 
 # --- 4. pack --------------------------------------------------------------

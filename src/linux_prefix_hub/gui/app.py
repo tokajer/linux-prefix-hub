@@ -487,6 +487,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         view = Adw.ToolbarView()
         view.add_top_bar(self._build_header())
+        self._offer_a_known_update()
         view.set_content(self._toasts)
         self.set_content(view)
 
@@ -506,11 +507,42 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append(_("Check for updates"), "app.check-update")
         menu.append(_("Repair setup"), "app.integrate")
         menu.append(_("About"), "app.about")
+        # Remembered so the update entry can turn into "install" once a
+        # check found something -- a GMenu item cannot be relabelled, only
+        # replaced (see `offer_update`).
+        self._menu = menu
+        self._update_item = 1
         button = Gtk.MenuButton(icon_name="open-menu-symbolic",
                                 menu_model=menu)
         button.set_tooltip_text(_("Main menu"))
         header.pack_end(button)
         return header
+
+    def _offer_a_known_update(self) -> None:
+        """An earlier check may already know about one.
+
+        Cache only, never the network: opening the window must not wait on
+        GitHub. `is_newer` guards against a cache written before the update
+        was installed.
+        """
+        from ..core import updater
+        cached = (db.load_config().get("update_check") or {}).get("result")
+        version = str((cached or {}).get("version") or "")
+        if version and updater.is_newer(version):
+            self.offer_update(version)
+
+    def offer_update(self, version: str | None) -> None:
+        """Turn the menu's update entry into an install offer, or back.
+
+        Finding an update and then leaving the user with no way to take it
+        is the state this window was in: the check reported a new version and
+        the only route to it was the command line.
+        """
+        label = (_("Install update {version}", version=version) if version
+                 else _("Check for updates"))
+        action = "app.install-update" if version else "app.check-update"
+        self._menu.remove(self._update_item)
+        self._menu.insert(self._update_item, label, action)
 
     def _build_list(self) -> Gtk.Widget:
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -599,6 +631,7 @@ class LphApplication(Adw.Application):
         self._window: MainWindow | None = None
         for name, handler in (("settings", self._on_settings),
                               ("check-update", self._on_check_update),
+                              ("install-update", self._on_install_update),
                               ("integrate", self._on_integrate),
                               ("about", self._on_about),
                               ("quit", lambda *_a: self.quit())):
@@ -673,13 +706,39 @@ class LphApplication(Adw.Application):
                 window.toast(_("Something went wrong: {error}",
                                error=str(error)))
             elif state and state.get("available"):
+                version = str(state.get("version"))
+                # The menu entry becomes the way to take it.
+                window.offer_update(version)
                 window.toast(_("Version {version} is available.",
-                               version=str(state.get("version"))))
+                               version=version))
             elif state and state.get("reason"):
                 # Never claim "up to date" for a check that did not happen.
                 window.toast(_("Could not check for updates."))
             else:
                 window.toast(_("You are up to date."))
+
+        tasks.run(work, done)
+
+    def _on_install_update(self, *_args: Any) -> None:
+        """Download and apply. Velopack restarts the app, so on success this
+        never comes back -- everything below `done` is an error path."""
+        window = self._window
+        if window is not None:
+            window.toast(_("Downloading the update..."))
+
+        def work() -> Any:
+            from ..core import updater
+            return updater.update()
+
+        def done(result: Any, error: Exception | None) -> None:
+            if window is None:
+                return
+            if error is not None:
+                window.toast(_("Update failed: {error}", error=str(error)))
+                return
+            window.toast(str(result.get("message", "")))
+            if not result.get("ok"):
+                window.offer_update(None)      # let them try again
 
         tasks.run(work, done)
 

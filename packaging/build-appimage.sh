@@ -121,7 +121,7 @@ EOF
 mkdir -p "${APPDIR}/usr/share/applications"
 cp "${APPDIR}/linux-prefix-hub.desktop" "${APPDIR}/usr/share/applications/"
 
-ICON="${ROOT}/packaging/linux-prefix-hub.png"
+ICON="${ROOT}/src/linux_prefix_hub/data/linux-prefix-hub.png"
 [ -f "${ICON}" ] || python3 "${ROOT}/packaging/make-icon.py" "${ICON}"
 cp "${ICON}" "${APPDIR}/linux-prefix-hub.png"
 cp "${ICON}" "${APPDIR}/.DirIcon"

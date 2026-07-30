@@ -104,3 +104,40 @@ def test_run_defers_to_gearlever(monkeypatch, tmp_path):
     assert cfg["managed_by"] == "gearlever"
     assert cfg["setup_done"] is True
     assert "install_dir" not in cfg      # GearLever owns placement
+
+
+# --- the icon ------------------------------------------------------------
+def test_setup_installs_the_icon_into_the_theme(monkeypatch):
+    """The menu entry and the About dialog reference the icon by *name*;
+    without a file in the theme both showed a blank placeholder."""
+    from linux_prefix_hub.core import integrate, paths
+    monkeypatch.setattr(integrate, "detect_gearlever", lambda: None)
+
+    result = integrate.full_setup(enable_watcher=False)
+
+    assert paths.ICON_FILE.exists()
+    assert paths.ICON_FILE.read_bytes() == paths.ICON_SOURCE.read_bytes()
+    assert result["icon"] == str(paths.ICON_FILE)
+    # ...and the name in the entry is the one we just installed.
+    entry = integrate.DESKTOP_FILE.read_text(encoding="utf-8")
+    assert f"Icon={paths.APP_NAME}\n" in entry
+    assert paths.ICON_FILE.name == f"{paths.APP_NAME}.png"
+
+
+def test_the_icon_ships_inside_the_package(monkeypatch):
+    """Not in packaging/: a pip install has no packaging/ directory, and the
+    AppImage copies only the package."""
+    from linux_prefix_hub.core import paths
+    assert paths.ICON_SOURCE.exists()
+    assert paths.ICON_SOURCE.parent.parent.name == "linux_prefix_hub"
+
+
+def test_a_missing_icon_does_not_fail_setup(monkeypatch, tmp_path):
+    from linux_prefix_hub.core import integrate, paths
+    monkeypatch.setattr(integrate, "detect_gearlever", lambda: None)
+    monkeypatch.setattr(paths, "ICON_SOURCE", tmp_path / "nope.png")
+
+    result = integrate.full_setup(enable_watcher=False)
+
+    assert result["icon"] == "(not shipped with this build)"
+    assert result["wrapper_shim"] == str(paths.WRAPPER_SHIM)

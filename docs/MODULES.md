@@ -41,7 +41,12 @@ Anything that spawns a program which outlives us must strip it as well
 Every fixed location in one place, XDG-conform:
 `DEFAULT_INSTALL_DIR`, `CONFIG_DIR`, `LOCAL_BIN`, the three shims,
 `WATCHER_UNIT`, `SNAPSHOT_DIR`, `PCGW_DIR`, `DEFAULT_REDIRECT_ROOT`
-(`~/Games`).
+(`~/Games`), `ICON_SOURCE`/`ICON_DIR`/`ICON_FILE`.
+
+The icon ships **inside the package** (`data/linux-prefix-hub.png`), not in
+`packaging/`: a pip install has no `packaging/` directory and the AppImage
+copies only the package, so anywhere else it would be missing exactly where
+it is needed.
 
 The constants are resolved at **import** time, which is why the tests reload
 this module after redirecting `HOME`.
@@ -461,7 +466,13 @@ would give a safe moment to apply a pending redirection.
 
 `running_as_appimage`, `detect_gearlever`, `relocate_appimage`,
 `install_shims` (wrapper/hook/daemon), `install_systemd_unit`,
-`install_desktop_entry`, `full_setup`. All idempotent.
+`install_desktop_entry`, `install_icon`, `full_setup`. All idempotent.
+
+`install_icon` copies the packaged PNG into
+`~/.local/share/icons/hicolor/256x256/apps/`. Both the menu entry
+(`Icon=linux-prefix-hub`) and the About dialog (`application_icon=`) name the
+icon rather than carry it, so without that copy both render a blank
+placeholder — which is what the application menu showed.
 
 **Building on it:** the shims are deliberately dumb. If the entry point
 changes, only `_shim_body` needs to know; the fixed paths stay.
