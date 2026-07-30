@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# AppRun -- Einstiegspunkt im AppImage.
+#
+# $APPIMAGE wird von der AppImage-Runtime gesetzt und zeigt auf die .AppImage-
+# Datei am aktuellen (evtl. wandernden) Ort. integrate.py nutzt das, um sich
+# an den festen Ort zu kopieren.
+#
+# Self-Heal: bei JEDEM normalen Start (ohne Sondermodus) sicherstellen, dass
+# Shims + systemd-Unit existieren und auf den festen Ort zeigen. So ueberlebt
+# die Integration auch, wenn der Nutzer mal aus /tmp gestartet hat.
+
+HERE="$(dirname "$(readlink -f "${0}")")"
+export PYTHONPATH="${HERE}/usr/lib/python:${PYTHONPATH}"
+PYTHON="${HERE}/usr/bin/python3"
+# Fallback auf System-Python, falls kein gebuendeltes dabei ist:
+[ -x "${PYTHON}" ] || PYTHON="$(command -v python3)"
+
+# Sondermodi direkt durchreichen (wrapper/daemon muessen schnell & ohne
+# Self-Heal-Overhead sein):
+case "${1}" in
+  --wrapper|--daemon|--integrate|--scan|--status)
+    exec "${PYTHON}" -m deinapp "$@"
+    ;;
+esac
+
+# Normalstart: leise self-heal, dann GUI/Welcome
+"${PYTHON}" -m deinapp --integrate >/dev/null 2>&1 || true
+exec "${PYTHON}" -m deinapp "$@"
