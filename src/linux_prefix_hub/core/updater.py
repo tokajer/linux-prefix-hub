@@ -121,11 +121,21 @@ def _explicit_locator() -> Any | None:
     appdir = os.environ.get("APPDIR")
     if not appimage or not appdir:
         return None
-    binary_dir = Path(appdir) / "usr" / "bin"
-    update_exe = binary_dir / "UpdateNix"
-    manifest = binary_dir / "sq.version"
-    if not update_exe.exists() or not manifest.exists():
+
+    # APPDIR means two different things here. The AppImage runtime sets it to
+    # the mount root; our own launcher then overwrites it with *its own*
+    # directory (`<mount>/usr/bin`, see build-velopack.sh), which is where vpk
+    # puts UpdateNix and sq.version. Look in both instead of picking one and
+    # being wrong the next time either side moves -- getting this wrong is
+    # silent, and its symptom is a window that cannot check for updates.
+    for binary_dir in (Path(appdir), Path(appdir) / "usr" / "bin"):
+        update_exe = binary_dir / "UpdateNix"
+        manifest = binary_dir / "sq.version"
+        if update_exe.exists() and manifest.exists():
+            break
+    else:
         return None
+
     try:
         from velopack import VelopackLocatorConfig
         return VelopackLocatorConfig(

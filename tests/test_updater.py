@@ -331,13 +331,19 @@ def _fake_velopack(monkeypatch, *, auto_locate_works: bool):
     return seen
 
 
-def _fake_bundle(monkeypatch, tmp_path):
-    """The two files `_explicit_locator` refuses to work without."""
+def _fake_bundle(monkeypatch, tmp_path, appdir_is_mount_root=True):
+    """The two files `_explicit_locator` refuses to work without.
+
+    `appdir_is_mount_root` picks which of the two meanings APPDIR carries:
+    the AppImage runtime sets the mount root, our own launcher overwrites it
+    with `<mount>/usr/bin`. Both happen, in that order, on every start.
+    """
     binary_dir = tmp_path / "mount" / "usr" / "bin"
     binary_dir.mkdir(parents=True)
     (binary_dir / "UpdateNix").write_text("#!/bin/true\n")
     (binary_dir / "sq.version").write_text("0.2.2\n")
-    monkeypatch.setenv("APPDIR", str(tmp_path / "mount"))
+    monkeypatch.setenv("APPDIR", str(tmp_path / "mount" if appdir_is_mount_root
+                                     else binary_dir))
     monkeypatch.setenv("APPIMAGE", str(tmp_path / "App.AppImage"))
     return binary_dir
 
@@ -354,6 +360,18 @@ def test_the_window_still_gets_a_manager(monkeypatch, tmp_path):
     assert seen["built_with_locator"] is True
     assert seen["locator"]["UpdateExePath"] == str(binary_dir / "UpdateNix")
     assert seen["locator"]["RootAppDir"] == str(tmp_path / "App.AppImage")
+
+
+def test_the_launchers_appdir_is_found_too(monkeypatch, tmp_path):
+    """`LinuxPrefixHub.sh` exports APPDIR as its own directory, so UpdateNix
+    sits *in* APPDIR rather than under `usr/bin`. Looking only in the latter
+    is why the window still could not check after the first fix."""
+    from linux_prefix_hub.core import updater
+    seen = _fake_velopack(monkeypatch, auto_locate_works=False)
+    binary_dir = _fake_bundle(monkeypatch, tmp_path, appdir_is_mount_root=False)
+
+    assert updater._manager() is not None
+    assert seen["locator"]["UpdateExePath"] == str(binary_dir / "UpdateNix")
 
 
 def test_velopacks_own_locate_is_left_alone_when_it_works(monkeypatch,
