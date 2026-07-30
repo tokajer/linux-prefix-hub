@@ -109,6 +109,7 @@
   "Ready. Turn on a game to get started.": "Fertig. Schalte ein Spiel ein, um zu starten.",
   "Version {version} is available.": "Version {version} ist verfügbar.",
   "You are up to date.": "Du bist auf dem neuesten Stand.",
+  "Could not check for updates.": "Konnte nicht nach Updates sehen.",
   "This build cannot update itself. Download the latest version from {url}.": "Diese Version kann sich nicht selbst aktualisieren. Lade die neueste Version von {url} herunter.",
   "open the window (this is the default)": "das Fenster öffnen (Standard)",
   "the overview in the terminal, no window": "die Übersicht im Terminal, ohne Fenster",

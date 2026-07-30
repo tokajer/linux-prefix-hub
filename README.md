@@ -49,13 +49,13 @@ linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/
 
 ## Install
 
-**AppImage (recommended)** — download the latest from
-[Releases](https://github.com/tokajer/linux-prefix-hub/releases), make it
-executable, run it once:
+**AppImage (recommended)** — the file name never changes, so this link
+always points at the newest release:
 
 ```bash
-chmod +x LinuxPrefixHub-*-x86_64.AppImage
-./LinuxPrefixHub-*-x86_64.AppImage
+curl -LO https://github.com/tokajer/linux-prefix-hub/releases/latest/download/LinuxPrefixHub-x86_64.AppImage
+chmod +x LinuxPrefixHub-x86_64.AppImage
+./LinuxPrefixHub-x86_64.AppImage
 ```
 
 It copies itself to `~/.local/share/linux-prefix-hub/`, creates the launcher

@@ -266,6 +266,21 @@ ${VPK} pack \
   --categories "Game;Utility;" \
   --outputDir "${OUTDIR}"
 
+# One stable download name, so
+#   .../releases/latest/download/LinuxPrefixHub-x86_64.AppImage
+# keeps working across releases. vpk names the file after the packId, which
+# we must not change -- that is Velopack's app identity and renaming it would
+# orphan every installation. Renaming the *file* is safe: the update feed
+# points at the .nupkg, never at this one.
+ASSET="${APP}-${ARCH}.AppImage"
+BUILT="$(find "${OUTDIR}" -maxdepth 1 -name '*.AppImage' | head -n1)"
+if [ -z "${BUILT}" ]; then
+  echo "vpk produced no AppImage in ${OUTDIR}" >&2
+  exit 1
+fi
+[ "$(basename "${BUILT}")" = "${ASSET}" ] || mv "${BUILT}" "${OUTDIR}/${ASSET}"
+
+# After the rename, so the sums describe the names that get uploaded.
 ( cd "${OUTDIR}" && sha256sum ./* > SHA256SUMS 2>/dev/null || true )
 
 say "Done"

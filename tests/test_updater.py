@@ -86,16 +86,16 @@ def test_parse_version_is_forgiving():
 # --- the release feed ----------------------------------------------------
 def test_repo_url_defaults_to_our_repo():
     from linux_prefix_hub.core import updater
-    assert updater._repo_url() == \
+    assert updater.repo_url() == \
         "https://github.com/tokajer/linux-prefix-hub"
 
 
 def test_repo_url_is_overridable_for_forks():
     from linux_prefix_hub.core import db, updater
     db.set_config("github_owner", "someone")
-    assert updater._repo_url() == "https://github.com/someone/linux-prefix-hub"
+    assert updater.repo_url() == "https://github.com/someone/linux-prefix-hub"
     db.set_config("update_url", "https://example.invalid/feed")
-    assert updater._repo_url() == "https://example.invalid/feed"
+    assert updater.repo_url() == "https://example.invalid/feed"
 
 
 # --- check ---------------------------------------------------------------
@@ -135,11 +135,14 @@ def test_a_checkout_counts_as_older_than_any_release(fake_velopack):
 
 
 def test_check_survives_being_offline(fake_velopack):
-    from linux_prefix_hub.core import updater
+    from linux_prefix_hub.core import db, updater
     fake_velopack(FakeManager(fail_on="check"))
     state = updater.check(force=True)
     assert state["available"] is False
     assert state["version"] == updater.__version__
+    # Not "you are up to date": we never got an answer.
+    assert state["reason"] == "unreachable"
+    assert "update_check" not in db.load_config()   # and nothing is cached
 
 
 def test_check_survives_a_missing_sdk(monkeypatch):
@@ -147,6 +150,28 @@ def test_check_survives_a_missing_sdk(monkeypatch):
     monkeypatch.setattr(updater, "_manager", lambda: None)
     state = updater.check(force=True)
     assert state["available"] is False
+    assert state["reason"] == "unavailable"
+
+
+def test_a_check_that_did_not_happen_is_not_up_to_date(fake_velopack):
+    """The bug this came from: a build with no updater in it reported
+    "you are up to date" while a newer release sat on GitHub. Only an empty
+    reason may be read as "we asked, and we are current"."""
+    from linux_prefix_hub.core import updater
+    assert updater.check(force=True)["reason"] == "unavailable"
+
+    fake_velopack(FakeManager(None))            # asked, nothing newer
+    state = updater.check(force=True)
+    assert state["available"] is False and state["reason"] == ""
+
+
+def test_being_current_is_cached_like_an_answer(fake_velopack):
+    from linux_prefix_hub.core import db, updater
+    manager = fake_velopack(FakeManager(None))
+    assert updater.check(force=True)["available"] is False
+    assert db.load_config()["update_check"]["result"]["reason"] == ""
+    assert updater.check()["cached"] is True
+    assert manager.calls == ["check"]           # not asked twice
 
 
 # --- update --------------------------------------------------------------

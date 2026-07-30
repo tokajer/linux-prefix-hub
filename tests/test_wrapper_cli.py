@@ -210,6 +210,31 @@ def test_scan_reports_an_empty_system(monkeypatch, capsys):
     assert "No games found" in capsys.readouterr().out
 
 
+def test_check_update_does_not_claim_to_be_current_without_asking(monkeypatch,
+                                                                  capsys):
+    """A build with no updater in it (pip, or the local AppImage) must say
+    so -- it used to report "you are up to date" past a newer release."""
+    from linux_prefix_hub.core import updater
+    monkeypatch.setattr(updater, "_manager", lambda: None)
+
+    assert _run(monkeypatch, "--check-update") == 1
+    out = capsys.readouterr().out
+    assert "cannot update itself" in out
+    assert "up to date" not in out
+    assert "github.com/tokajer" in out
+
+
+def test_check_update_says_up_to_date_when_it_really_asked(monkeypatch,
+                                                           capsys):
+    from linux_prefix_hub.core import updater
+    monkeypatch.setattr(updater, "check",
+                        lambda force=False: {"available": False,
+                                             "version": "1.0.0",
+                                             "reason": ""})
+    assert _run(monkeypatch, "--check-update") == 0
+    assert "up to date" in capsys.readouterr().out
+
+
 def test_status_lists_a_redirected_location(monkeypatch, capsys, fake_prefix):
     from linux_prefix_hub.core import db
     fingerprint = db.upsert_prefix({

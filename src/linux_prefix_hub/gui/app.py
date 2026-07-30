@@ -675,6 +675,9 @@ class LphApplication(Adw.Application):
             elif state and state.get("available"):
                 window.toast(_("Version {version} is available.",
                                version=str(state.get("version"))))
+            elif state and state.get("reason"):
+                # Never claim "up to date" for a check that did not happen.
+                window.toast(_("Could not check for updates."))
             else:
                 window.toast(_("You are up to date."))
 

@@ -37,6 +37,14 @@ disagree with the tag:
 Step 5 matters: the directory *is* the update feed. Uploading only the
 `.AppImage` leaves `--update` unable to find anything.
 
+The AppImage is renamed to **`LinuxPrefixHub-x86_64.AppImage`** before
+upload — no version in it, so
+`.../releases/latest/download/LinuxPrefixHub-x86_64.AppImage` is a link that
+keeps working. `vpk` names the file after the packId, which stays
+`io.github.tokajer.LinuxPrefixHub`: that is Velopack's app identity and
+changing it would orphan every installation. Renaming the file is safe, the
+feed points at the `.nupkg`.
+
 Re-running it for a tag that already has a release uploads over it
 (`--clobber`) instead of failing.
 

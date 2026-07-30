@@ -274,6 +274,16 @@ def _cmd_update(install: bool) -> int:
         print(result["message"])
         return 0 if result["ok"] else 1
     state = updater.check(force=True)
+    # "Up to date" is only honest when we actually got an answer. Saying it
+    # after a check that never happened is how a build with no updater in it
+    # ends up claiming to be current while a newer release sits on GitHub.
+    if state.get("reason") == "unavailable":
+        print(_("This build cannot update itself. Download the latest "
+                "version from {url}.", url=updater.repo_url()))
+        return 1
+    if state.get("reason") == "unreachable":
+        print(_("Could not reach GitHub."))
+        return 1
     if state.get("available"):
         print(_("Update available: {version} (you have {current}).",
                 version=state.get("version"), current=updater.__version__))

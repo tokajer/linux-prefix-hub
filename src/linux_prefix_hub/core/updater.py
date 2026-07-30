@@ -38,7 +38,7 @@ REPO_URL = "https://github.com/{owner}/{repo}"
 CHECK_INTERVAL = 24 * 3600      # once a day is plenty
 
 
-def _repo_url() -> str:
+def repo_url() -> str:
     """The release feed. Overridable in config.json (for forks)."""
     cfg = db.load_config()
     owner = str(cfg.get("github_owner") or GITHUB_OWNER)
@@ -97,7 +97,7 @@ def _manager() -> Any | None:
     """An UpdateManager for our release feed, or None if unusable."""
     try:
         from velopack import GithubSource, UpdateManager
-        return UpdateManager(GithubSource(_repo_url(), None, False))
+        return UpdateManager(GithubSource(repo_url(), None, False))
     except Exception:
         # Not installed, not a packaged build, or no feed configured.
         return None
@@ -106,7 +106,15 @@ def _manager() -> Any | None:
 def check(force: bool = False) -> dict[str, Any]:
     """Is there a newer release? Cached for a day unless `force`.
 
-    Returns {available, version, cached}. Never raises.
+    Returns {available, version, reason, cached}. Never raises.
+
+    `reason` is the part that took a bug report to get right: "" means we
+    really asked and really are current, "unavailable" means this build has
+    no updater in it (a pip install, or `build-appimage.sh`, which ships no
+    velopack wheel on purpose), "unreachable" means the feed did not answer.
+    Without it every one of those looks like "you are up to date", which is
+    the one answer a user cannot argue with -- and the two failure cases are
+    exactly when they should.
     """
     cfg = db.load_config()
     cached = cfg.get("update_check") or {}
@@ -114,18 +122,25 @@ def check(force: bool = False) -> dict[str, Any]:
             and time.time() - float(cached["at"]) < CHECK_INTERVAL):
         return {**cached.get("result", {}), "cached": True}
 
-    result: dict[str, Any] = {"available": False, "version": __version__}
+    current: dict[str, Any] = {"available": False, "version": __version__,
+                               "reason": ""}
     manager = _manager()
-    if manager is not None:
-        try:
-            info = manager.check_for_updates()
-        except Exception:
-            info = None
-        if info is not None:
-            version = str(info.TargetFullRelease.Version)
-            result = {"available": is_newer(version), "version": version}
-            db.set_config("update_check", {"at": time.time(),
-                                           "result": result})
+    if manager is None:
+        return {**current, "reason": "unavailable", "cached": False}
+
+    try:
+        info = manager.check_for_updates()
+    except Exception:
+        return {**current, "reason": "unreachable", "cached": False}
+
+    # Velopack answers None for "nothing newer than you" -- that is a real
+    # answer and worth caching, unlike the two returns above.
+    result = current if info is None else {
+        "available": is_newer(str(info.TargetFullRelease.Version)),
+        "version": str(info.TargetFullRelease.Version),
+        "reason": "",
+    }
+    db.set_config("update_check", {"at": time.time(), "result": result})
     return {**result, "cached": False}
 
 
@@ -151,7 +166,7 @@ def update(force: bool = False) -> dict[str, Any]:
     if manager is None:
         return {"ok": False,
                 "message": _("This build cannot update itself. Download the "
-                             "latest version from {url}.", url=_repo_url())}
+                             "latest version from {url}.", url=repo_url())}
 
     try:
         info = manager.check_for_updates()
