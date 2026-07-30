@@ -38,7 +38,8 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `core/paths.py` | Every persistent path. Constants resolved at **import** time (tests reload it) |
 | `core/i18n.py` | `_()`; English source strings, `locales/de.json` catalog, `LPH_LANG` > config > `LANG` |
 | `core/db.py` | `prefixes.json`. `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS` |
-| `core/snapshot.py` | mtime snapshot → diff → storage locations; pending snapshots for the 2-process hook flow |
+| `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); pending snapshots for the 2-process hook flow |
+| `core/desktop.py` | Hand a folder to the user's file manager. `xdg-open` first |
 | `core/wrapper.py` | The launch hook, both shapes (wrap and pre/post). Must never break a launch |
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
 | `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals |
@@ -59,6 +60,8 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 
 1. **A rescan must never overwrite a user decision.** New user-controlled
    field → add it to `USER_FIELDS`/`LOCATION_USER_FIELDS` in `core/db.py`.
+   A location's identity is `db.location_key(loc)` = `(where, win_path)` —
+   the prefix and the install folder are two namespaces, not one.
 2. **Never round-trip someone else's config through a parser.** Lutris YAML is
    edited line by line, Steam VDF and Heroic JSON keep a `.bak`. Reformatting
    a user's launcher config is a bug.

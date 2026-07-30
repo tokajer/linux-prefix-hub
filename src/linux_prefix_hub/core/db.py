@@ -93,6 +93,21 @@ def install_dir() -> Path:
     return Path(d) if d else paths.DEFAULT_INSTALL_DIR
 
 
+def redirect_root() -> Path:
+    """Where moved save folders end up: one directory per game below this."""
+    d = load_config().get("redirect_root")
+    return Path(os.path.expanduser(d)) if d else paths.DEFAULT_REDIRECT_ROOT
+
+
+def location_key(loc: dict[str, Any]) -> tuple[str, str]:
+    """Identity of a storage location: its space plus its path in it.
+
+    Entries written before the install folder was tracked have no `where`;
+    they are prefix locations.
+    """
+    return (str(loc.get("where") or "prefix"), str(loc.get("win_path", "")))
+
+
 # --- Prefix DB -----------------------------------------------------------
 def load_prefixes() -> dict[str, Any]:
     return _read_json(paths.PREFIX_DB, {})
@@ -119,18 +134,20 @@ def upsert_prefix(entry: dict[str, Any]) -> str:
             merged[field] = existing[field]
     merged.setdefault("managed", False)
 
-    # storage_locations: merge by win_path
-    old_locs = {loc["win_path"]: loc
+    # storage_locations: merge by (space, win_path). The two spaces are
+    # separate namespaces -- "cfg" in the install folder is not "cfg" in the
+    # prefix -- so the key has to carry `where`.
+    old_locs = {location_key(loc): loc
                 for loc in existing.get("storage_locations", [])}
     for loc in entry.get("storage_locations", []):
-        wp = loc["win_path"]
-        old = old_locs.get(wp)
+        key = location_key(loc)
+        old = old_locs.get(key)
         if old:
             for field in LOCATION_USER_FIELDS:
                 if field in old:
                     loc[field] = old[field]
         loc.setdefault("redirected", False)
-        old_locs[wp] = loc
+        old_locs[key] = loc
     merged["storage_locations"] = list(old_locs.values())
 
     db[fp] = merged
@@ -168,14 +185,19 @@ def resolve(needle: str) -> tuple[str, dict[str, Any]] | None:
     return None
 
 
-def update_location(fp: str, win_path: str, **fields: Any) -> bool:
-    """Patch one storage location of one prefix. Returns True if it existed."""
+def update_location(fp: str, win_path: str, where: str = "prefix",
+                    **fields: Any) -> bool:
+    """Patch one storage location of one prefix. Returns True if it existed.
+
+    `where` defaults to the prefix because that is the only space anything
+    is ever redirected in.
+    """
     db = load_prefixes()
     entry = db.get(fp)
     if not entry:
         return False
     for loc in entry.get("storage_locations", []):
-        if loc.get("win_path") == win_path:
+        if location_key(loc) == (where, win_path):
             loc.update(fields)
             save_prefixes(db)
             return True

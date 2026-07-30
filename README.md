@@ -11,7 +11,7 @@ everywhere else.** Nothing to configure.
 linux-prefix-hub --scan                  # your games, from every launcher
 linux-prefix-hub --connect "Cyberpunk"   # let us learn from it
 linux-prefix-hub --status                # what we learned
-linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/Cyberpunk 2077/
+linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/linux-prefix-hub/
 ```
 
 ## What it does
@@ -25,10 +25,13 @@ linux-prefix-hub --redirect "Cyberpunk"  # saves -> ~/Games/Cyberpunk 2077/
   config*. Lutris and Heroic do it silently; Steam needs one click while Steam
   is closed (it overwrites its config on exit, so there is no way around that).
 - **Moving saves home**, optionally: a registry entry plus a symlink pointing
-  at the same folder in `~/Games/<Game>/`. Games that respect Windows folders
-  follow the registry, stubborn ones hit the symlink. Idempotent and
-  self-healing — a Proton update that eats the symlink is repaired before the
-  next launch.
+  at the same folder in `~/Games/linux-prefix-hub/<Game>/` (configurable in
+  Settings). Games that respect Windows folders follow the registry, stubborn
+  ones hit the symlink. Idempotent and self-healing — a Proton update that
+  eats the symlink is repaired before the next launch.
+- **Showing you the folder**, whether or not it can be moved. Source-engine
+  games like Portal 2 save into their own install directory; those are found
+  too, listed, and opened in your file manager on request — just not moved.
 - **Noticing new games** via a small background service, and telling you when
   a new version of this app is out.
 - **A window** (GTK 4 / libadwaita): your games as a list, one switch to
@@ -82,17 +85,28 @@ Then play once. `--status` will show what the game touched.
 ## Moving saves into your home folder
 
 ```bash
-linux-prefix-hub --redirect "Elden Ring"              # -> ~/Games/Elden Ring/
+linux-prefix-hub --redirect "Elden Ring"              # -> the save folder
 linux-prefix-hub --redirect "Elden Ring" --target /mnt/ssd/Saves/Elden
 linux-prefix-hub --undo-redirect "Elden Ring"         # back into the game folder
+linux-prefix-hub --open "Elden Ring"                  # show it in the file manager
 ```
 
 Existing files are **never overwritten** — if both sides have a `save0.sav`,
 the one in the target wins and nothing is lost. The game must be closed.
 
+By default everything lands in `~/Games/linux-prefix-hub/<Game>/`. Change it in
+the window under **Settings**, or:
+
+```bash
+linux-prefix-hub --set-save-folder /mnt/ssd/Saves
+```
+
+Folders you already moved keep the path they were moved to; only later moves
+follow the new setting.
+
 Locations outside a standard Windows folder (a game writing into its own
 install directory) are reported but not moved: there is no safe way to do it,
-and pretending otherwise would risk your data.
+and pretending otherwise would risk your data. `--open` still takes you there.
 
 ## Language
 
@@ -133,6 +147,8 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --disconnect GAME              remove it again
   --redirect GAME [--target P]   move storage into your home folder
   --undo-redirect GAME           move it back
+  --open GAME                    show its save folder in the file manager
+  --set-save-folder PATH         where moved saves are kept
   --check-update / --update      Velopack
   --integrate                    recreate shims/service/menu entry
   --lang / --set-language        language for this run / permanently
@@ -150,7 +166,7 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
 ~/.local/bin/linux-prefix-hub-daemon                      hook for systemd
 ~/.config/linux-prefix-hub/                               config, database
 ~/.config/systemd/user/linux-prefix-hub-watcher.service
-~/Games/<Game>/                                           where saves go
+~/Games/linux-prefix-hub/<Game>/                          where saves go
 ```
 
 ## Verified on real hardware

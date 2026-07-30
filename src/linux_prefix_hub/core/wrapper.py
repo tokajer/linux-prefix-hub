@@ -80,6 +80,7 @@ def _entry_from_context(ctx: dict[str, Any],
         "game_name": ctx.get("game_name", ""),
         "prefix_path": ctx["prefix_path"],
         "user_dir": ctx["user_dir"],
+        "game_dir": ctx.get("game_dir"),
         "managed": True,
     }
     if locations is not None:
@@ -91,18 +92,42 @@ def _usable(ctx: dict[str, Any] | None) -> bool:
     return bool(ctx and ctx.get("prefix_path") and ctx.get("user_dir"))
 
 
-def _before(ctx: dict[str, Any]) -> tuple[str, dict[str, float]]:
+# A "before" state is both spaces at once: the prefix and the install folder.
+Snapshots = dict[str, dict[str, float]]
+
+
+def _snapshot_all(ctx: dict[str, Any]) -> Snapshots:
+    states = {snapshot.WHERE_PREFIX: snapshot.snapshot(ctx["prefix_path"],
+                                                       ctx["user_dir"])}
+    # Absent rather than empty when the install folder is not covered, so the
+    # diff below has nothing to compare and simply says nothing about it.
+    game = snapshot.snapshot_game_dir(ctx.get("game_dir"))
+    if game is not None:
+        states[snapshot.WHERE_GAME] = game
+    return states
+
+
+def _before(ctx: dict[str, Any]) -> tuple[str, Snapshots]:
     """Register the game, self-heal its redirections, snapshot."""
     fingerprint = db.upsert_prefix(_entry_from_context(ctx))
     with contextlib.suppress(Exception):   # never block a launch
         redirect.reapply(fingerprint)
-    return fingerprint, snapshot.snapshot(ctx["prefix_path"], ctx["user_dir"])
+    return fingerprint, _snapshot_all(ctx)
 
 
-def _after(ctx: dict[str, Any], before: dict[str, float]) -> None:
-    """Diff against the pre-launch snapshot and store what we learned."""
-    after = snapshot.snapshot(ctx["prefix_path"], ctx["user_dir"])
-    locations = snapshot.classify_locations(snapshot.diff(before, after))
+def _after(ctx: dict[str, Any], before: Snapshots) -> None:
+    """Diff against the pre-launch snapshot and store what we learned.
+
+    Both spaces are diffed. A game like Portal 2 touches nothing but
+    AppData/Local/Temp inside the prefix and writes its real saves into
+    `<install folder>/portal2/SAVE/` -- prefix-only detection learns nothing
+    at all about it.
+    """
+    after = _snapshot_all(ctx)
+    locations: list[dict[str, Any]] = []
+    for where, before_state in before.items():
+        changed = snapshot.diff(before_state, after.get(where, {}))
+        locations += snapshot.classify_locations(changed, where)
     if locations:
         db.upsert_prefix(_entry_from_context(ctx, locations))
 

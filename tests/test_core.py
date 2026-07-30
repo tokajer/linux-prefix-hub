@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 
 # --- VDF parser ----------------------------------------------------------
@@ -77,12 +78,85 @@ def test_snapshot_ignores_wine_scratch_space(tmp_path):
     assert taken == {}
 
 
+def test_snapshot_finds_saves_in_the_install_folder(tmp_path):
+    """The Portal 2 case: nothing in the prefix, saves in the game folder."""
+    from linux_prefix_hub.core import snapshot
+    game_dir = tmp_path / "common/Portal 2"
+    (game_dir / "portal2").mkdir(parents=True)
+
+    before = snapshot.snapshot_game_dir(game_dir)
+    time.sleep(0.01)
+    saves = game_dir / "portal2/SAVE/76561197990348047"
+    saves.mkdir(parents=True)
+    (saves / "sp_a2_bts3.sav").write_text("progress")
+
+    after = snapshot.snapshot_game_dir(game_dir)
+    locations = snapshot.classify_locations(snapshot.diff(before, after),
+                                            snapshot.WHERE_GAME)
+
+    assert locations
+    assert locations[0]["where"] == "game_folder"
+    assert locations[0]["type"] == "saves"
+    assert "SAVE" in locations[0]["win_path"]
+
+
+def test_snapshot_ignores_install_folder_churn(tmp_path):
+    from linux_prefix_hub.core import snapshot
+    game_dir = tmp_path / "game"
+    (game_dir / "logs").mkdir(parents=True)
+    (game_dir / "logs/session.txt").write_text("x")
+    (game_dir / "crash.dmp").write_text("x")
+    (game_dir / "console.log").write_text("x")
+    (game_dir / "steam_appid.txt").write_text("620")
+    (game_dir / "save.sav").write_text("keep me")
+
+    assert list(snapshot.snapshot_game_dir(game_dir)) == ["save.sav"]
+
+
+def test_snapshot_gives_up_on_an_enormous_install_folder(tmp_path,
+                                                        monkeypatch):
+    """Better no install-folder detection than a delayed launch."""
+    from linux_prefix_hub.core import snapshot
+    game_dir = tmp_path / "huge"
+    game_dir.mkdir()
+    for i in range(5):
+        (game_dir / f"f{i}.dat").write_text("x")
+    monkeypatch.setattr(snapshot, "MAX_GAME_DIR_FILES", 3)
+
+    assert snapshot.snapshot_game_dir(game_dir) is None
+
+
+def test_not_covered_and_covered_but_empty_are_different(tmp_path):
+    """`{}` still teaches us something on the next launch; None does not."""
+    from linux_prefix_hub.core import snapshot
+    assert snapshot.snapshot_game_dir(None) is None
+    assert snapshot.snapshot_game_dir(tmp_path / "nope") is None
+
+    empty = tmp_path / "fresh install"
+    empty.mkdir()
+    assert snapshot.snapshot_game_dir(empty) == {}
+
+
 def test_pending_snapshot_survives_between_processes():
     from linux_prefix_hub.core import snapshot
-    snapshot.save_pending("abc123", {"Documents/a.sav": 1.5})
-    assert snapshot.load_pending("abc123") == {"Documents/a.sav": 1.5}
+    state = {snapshot.WHERE_PREFIX: {"Documents/a.sav": 1.5},
+             snapshot.WHERE_GAME: {"portal2/SAVE/x.sav": 2.5}}
+    snapshot.save_pending("abc123", state)
+    assert snapshot.load_pending("abc123") == state
     # Consumed: a stale snapshot must not leak into the next launch.
     assert snapshot.load_pending("abc123") == {}
+
+
+def test_a_pending_snapshot_from_an_older_version_still_loads():
+    """Written before the install folder was a second space."""
+    import json
+
+    from linux_prefix_hub.core import paths, snapshot
+    paths.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    paths.snapshot_file("old").write_text(json.dumps({"Documents/a.sav": 1.5}),
+                                          encoding="utf-8")
+    assert snapshot.load_pending("old") == {
+        snapshot.WHERE_PREFIX: {"Documents/a.sav": 1.5}}
 
 
 # --- Prefix DB -----------------------------------------------------------
@@ -121,6 +195,77 @@ def test_db_merges_new_locations(tmp_path):
     paths = {loc["win_path"]
              for loc in db.get_prefix(fingerprint)["storage_locations"]}
     assert paths == {"Documents/CP", "AppData/Local/CP"}
+
+
+# --- opening a folder ----------------------------------------------------
+def test_open_folder_uses_the_first_opener_it_finds(tmp_path, monkeypatch):
+    from linux_prefix_hub.core import desktop
+    calls: list[list[str]] = []
+    monkeypatch.setattr(desktop.shutil, "which",
+                        lambda name: "/usr/bin/gio" if name == "gio" else None)
+    monkeypatch.setattr(desktop.subprocess, "Popen",
+                        lambda argv, **kw: calls.append(argv))
+
+    assert desktop.open_folder(tmp_path) is True
+    assert calls == [["gio", "open", str(tmp_path)]]
+
+
+def test_open_folder_refuses_what_is_not_there(tmp_path, monkeypatch):
+    from linux_prefix_hub.core import desktop
+    monkeypatch.setattr(desktop.shutil, "which", lambda name: "/usr/bin/x")
+    assert desktop.open_folder(tmp_path / "gone") is False
+
+
+def test_open_folder_without_any_file_manager(tmp_path, monkeypatch):
+    from linux_prefix_hub.core import desktop
+    monkeypatch.setattr(desktop.shutil, "which", lambda name: None)
+    assert desktop.open_folder(tmp_path) is False
+
+
+def test_location_path_points_where_the_files_are(tmp_path):
+    from linux_prefix_hub.core import redirect
+    entry = {"prefix_path": str(tmp_path / "pfx"), "user_dir": "steamuser",
+             "game_dir": str(tmp_path / "common/Portal 2")}
+
+    in_prefix = {"win_path": "Documents/Q", "where": "prefix"}
+    assert redirect.location_path(entry, in_prefix) == (
+        tmp_path / "pfx/drive_c/users/steamuser/Documents/Q")
+
+    in_game = {"win_path": "portal2/SAVE", "where": "game_folder"}
+    assert redirect.location_path(entry, in_game) == (
+        tmp_path / "common/Portal 2/portal2/SAVE")
+
+    moved = {"win_path": "Documents/Q", "where": "prefix",
+             "redirected": True, "redirect_target": "/home/me/Games/Q"}
+    assert redirect.location_path(entry, moved) == Path("/home/me/Games/Q")
+
+
+def test_db_keeps_the_two_location_spaces_apart(tmp_path):
+    """Same relative path in the prefix and in the install folder."""
+    from linux_prefix_hub.core import db
+    fingerprint = db.upsert_prefix(_entry(tmp_path, storage_locations=[
+        {"type": "config", "win_path": "cfg", "where": "prefix"}]))
+    db.upsert_prefix(_entry(tmp_path, storage_locations=[
+        {"type": "config", "win_path": "cfg", "where": "game_folder"}]))
+
+    locations = db.get_prefix(fingerprint)["storage_locations"]
+    assert {db.location_key(loc) for loc in locations} == {
+        ("prefix", "cfg"), ("game_folder", "cfg")}
+
+
+def test_db_updates_the_location_in_the_space_it_was_asked_for(tmp_path):
+    from linux_prefix_hub.core import db
+    fingerprint = db.upsert_prefix(_entry(tmp_path, storage_locations=[
+        {"type": "saves", "win_path": "Documents/CP", "where": "prefix"},
+        {"type": "saves", "win_path": "Documents/CP",
+         "where": "game_folder"}]))
+
+    db.update_location(fingerprint, "Documents/CP", redirected=True)
+
+    by_space = {db.location_key(loc)[0]: loc
+                for loc in db.get_prefix(fingerprint)["storage_locations"]}
+    assert by_space["prefix"]["redirected"] is True
+    assert by_space["game_folder"]["redirected"] is False
 
 
 def test_db_resolve_by_name_and_id(tmp_path):

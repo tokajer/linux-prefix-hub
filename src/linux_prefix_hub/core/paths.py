@@ -50,8 +50,12 @@ PREFIX_DB = CONFIG_DIR / "prefixes.json"       # detected prefixes + storage
 KNOWN_GAMES = CONFIG_DIR / "known_games.json"  # for new-game detection
 SNAPSHOT_DIR = CONFIG_DIR / "snapshots"        # pending pre-launch snapshots
 
-# Where redirected storage locations end up by default: one folder per game.
-DEFAULT_REDIRECT_ROOT = Path.home() / "Games"
+# Where redirected storage locations end up by default: one folder per game
+# below this. Our own subfolder, so ~/Games stays the user's -- they very
+# likely already keep game installs there. Overridable via config
+# ("redirect_root", see db.redirect_root); already-moved folders keep the
+# absolute target stored with them, so changing it never strands data.
+DEFAULT_REDIRECT_ROOT = Path.home() / "Games" / APP_NAME
 
 
 def installed_appimage_path(install_dir: Path | None = None) -> Path:

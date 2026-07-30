@@ -29,7 +29,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import db, paths, registry
+from . import db, registry
 from .i18n import _
 
 
@@ -54,14 +54,40 @@ def _sanitize(name: str) -> str:
 
 def default_target(game_name: str, root: str,
                    base: Path | None = None) -> Path:
-    """~/Games/<Game>/<Documents|AppData/Roaming|...>: one folder per game."""
-    return (base or paths.DEFAULT_REDIRECT_ROOT) / _sanitize(game_name) / root
+    """`<root>/<Game>/<Documents|AppData/Roaming|...>`: one folder per game.
+
+    The root is `db.redirect_root()` -- configurable, because "where my games
+    keep their saves" is exactly the kind of thing people have an opinion
+    about.
+    """
+    return (base or db.redirect_root()) / _sanitize(game_name) / root
 
 
 def physical_path(entry: dict[str, Any], root: str) -> Path:
     """Where the shell folder physically lives inside the prefix."""
     return (Path(entry["prefix_path"]) / "drive_c" / "users"
             / entry["user_dir"] / root)
+
+
+def location_path(entry: dict[str, Any], loc: dict[str, Any]) -> Path | None:
+    """Where a storage location's files are *right now*, on disk.
+
+    That is what "open this folder" needs: the redirect target once it has
+    been moved, the install folder for game-folder locations, and the path
+    inside the prefix otherwise. Returns None when it cannot be resolved.
+    """
+    if loc.get("redirected") and loc.get("redirect_target"):
+        return Path(str(loc["redirect_target"]))
+
+    win_path = str(loc.get("win_path", ""))
+    if str(loc.get("where")) == "game_folder":
+        game_dir = entry.get("game_dir")
+        return Path(str(game_dir)) / win_path if game_dir else None
+
+    if not entry.get("prefix_path") or not entry.get("user_dir"):
+        return None
+    return (Path(entry["prefix_path"]) / "drive_c" / "users"
+            / entry["user_dir"] / win_path)
 
 
 def windows_default(entry: dict[str, Any], root: str) -> str:

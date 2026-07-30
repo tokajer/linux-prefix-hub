@@ -27,7 +27,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from ..core import db, paths, redirect, registry  # noqa: E402
+from ..core import db, desktop, paths, redirect, registry  # noqa: E402
 from ..core.i18n import _  # noqa: E402
 from . import tasks  # noqa: E402
 
@@ -111,8 +111,16 @@ class GameRow(Adw.ExpanderRow):
         fingerprint, entry = found            # type: ignore[misc]
         seen: set[str] = set()
         for loc in locations:
-            root = registry.shell_folder_root(str(loc.get("win_path", "")))
-            if not root or root in seen:
+            # Only a shell folder can be moved (the registry has no key for
+            # anything else). The rest is shown read-only rather than hidden:
+            # knowing *where* a game saves is the point, even when we cannot
+            # touch it.
+            root = (registry.shell_folder_root(str(loc.get("win_path", "")))
+                    if loc.get("where") != "game_folder" else None)
+            if root is None:
+                self.add_row(FixedLocationRow(self._window, entry, loc))
+                continue
+            if root in seen:
                 continue
             seen.add(root)
             self.add_row(LocationRow(self._window, fingerprint, entry,
@@ -166,6 +174,57 @@ class GameRow(Adw.ExpanderRow):
         return True
 
 
+def open_button(window: MainWindow, entry: dict[str, Any],
+                loc: dict[str, Any]) -> Gtk.Button:
+    """A button that shows this location in the file manager.
+
+    Insensitive when the folder is not there (yet) -- a button that does
+    nothing when clicked is worse than one that is visibly unavailable.
+    """
+    button = Gtk.Button(icon_name="folder-open-symbolic",
+                        valign=Gtk.Align.CENTER)
+    button.add_css_class("flat")
+    path = redirect.location_path(entry, loc)
+    if path is None or not path.is_dir():
+        button.set_sensitive(False)
+        button.set_tooltip_text(_("This folder does not exist (yet)"))
+        return button
+
+    button.set_tooltip_text(_("Open in the file manager"))
+
+    def on_click(*_a: Any) -> None:
+        if not desktop.open_folder(path):
+            window.toast(_("Could not open {path}", path=str(path)))
+
+    button.connect("clicked", on_click)
+    return button
+
+
+class FixedLocationRow(Adw.ActionRow):
+    """A location we can show but not move.
+
+    Two cases land here: the game writes into its own install folder (no
+    registry key exists for that, and symlinking it fights the launcher's
+    updater), or it writes somewhere in the prefix that is not a shell folder.
+    Both are worth showing -- "where does this game save?" is the question the
+    app exists to answer.
+    """
+
+    def __init__(self, window: MainWindow, entry: dict[str, Any],
+                 loc: dict[str, Any]) -> None:
+        super().__init__()
+        win_path = str(loc.get("win_path", ""))
+        in_game_folder = loc.get("where") == "game_folder"
+
+        self.set_title(esc(_("Saves in {folder}",
+                             folder=win_path.split("/")[-1] or win_path)))
+        self.set_subtitle(esc(
+            _("in the game's own folder -- cannot be moved") if in_game_folder
+            else _("outside the folders we can move")))
+        self.add_suffix(open_button(window, entry, loc))
+        self.set_activatable(False)
+
+
 class LocationRow(Adw.ActionRow):
     """One save location, with a switch that moves it into the home folder."""
 
@@ -181,6 +240,8 @@ class LocationRow(Adw.ActionRow):
 
         self.set_title(esc(_("Saves in {folder}", folder=root)))
         self.set_subtitle(esc(self._where(loc)))
+
+        self.add_suffix(open_button(window, entry, loc))
 
         self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._switch.set_tooltip_text(_("Keep these saves in your home "
@@ -230,6 +291,88 @@ class LocationRow(Adw.ActionRow):
         return True
 
 
+class SettingsDialog:
+    """Where moved saves are kept. Built as a dialog, presented on the window.
+
+    `Adw.PreferencesDialog` is libadwaita 1.5+; older systems get the window
+    flavour. The app runs on whatever GTK the host has (see
+    `__main__._reexec_gui`), so neither can be assumed.
+    """
+
+    def __init__(self, window: MainWindow) -> None:
+        self._window = window
+        self._dialog = (Adw.PreferencesDialog()
+                        if hasattr(Adw, "PreferencesDialog")
+                        else Adw.PreferencesWindow())
+
+        page = Adw.PreferencesPage(title=_("Settings"))
+        group = Adw.PreferencesGroup(
+            title=_("Where saves are kept"),
+            description=_("When you move a game's saves out of the game "
+                          "folder, they land here, one folder per game. "
+                          "Folders you already moved stay where they are."))
+
+        self._row = Adw.ActionRow(title=esc(_("Save folder")))
+        self._row.set_subtitle(esc(str(db.redirect_root())))
+
+        choose = Gtk.Button(label=_("Choose..."), valign=Gtk.Align.CENTER)
+        choose.connect("clicked", self._on_choose)
+        self._row.add_suffix(choose)
+
+        reset = Gtk.Button(icon_name="edit-undo-symbolic",
+                           valign=Gtk.Align.CENTER)
+        reset.add_css_class("flat")
+        reset.set_tooltip_text(_("Back to the default folder"))
+        reset.connect("clicked", self._on_reset)
+        self._row.add_suffix(reset)
+
+        group.add(self._row)
+        page.add(group)
+        self._dialog.add(page)
+
+    def present(self) -> None:
+        if hasattr(self._dialog, "present"):
+            try:
+                self._dialog.present(self._window)
+                return
+            except TypeError:            # PreferencesWindow.present() takes 0
+                pass
+        self._dialog.set_transient_for(self._window)
+        self._dialog.set_modal(True)
+        self._dialog.show()
+
+    # --- actions ---------------------------------------------------------
+    def _apply(self, path: str | None) -> None:
+        """None resets to the default."""
+        db.set_config("redirect_root", path)
+        self._row.set_subtitle(esc(str(db.redirect_root())))
+        self._window.toast(_("Saves will be kept in {path}.",
+                             path=str(db.redirect_root())))
+
+    def _on_reset(self, *_a: Any) -> None:
+        self._apply(None)
+
+    def _on_choose(self, *_a: Any) -> None:
+        if not hasattr(Gtk, "FileDialog"):        # GTK < 4.10
+            self._window.toast(_("Set it with: {cmd}",
+                                 cmd=f"{paths.APP_NAME} --set-save-folder "
+                                     f"PATH"))
+            return
+        dialog = Gtk.FileDialog(title=_("Choose the save folder"))
+        dialog.set_initial_folder(Gio.File.new_for_path(
+            str(db.redirect_root().parent)))
+
+        def on_done(source: Any, result: Any) -> None:
+            try:
+                folder = source.select_folder_finish(result)
+            except GLib.Error:
+                return                            # cancelled -- not an error
+            if folder and folder.get_path():
+                self._apply(folder.get_path())
+
+        dialog.select_folder(self._window, None, on_done)
+
+
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -268,6 +411,7 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_start(refresh)
 
         menu = Gio.Menu()
+        menu.append(_("Settings"), "app.settings")
         menu.append(_("Check for updates"), "app.check-update")
         menu.append(_("Repair setup"), "app.integrate")
         menu.append(_("About"), "app.about")
@@ -352,7 +496,8 @@ class LphApplication(Adw.Application):
     def __init__(self) -> None:
         super().__init__(application_id=APP_ID)
         self._window: MainWindow | None = None
-        for name, handler in (("check-update", self._on_check_update),
+        for name, handler in (("settings", self._on_settings),
+                              ("check-update", self._on_check_update),
                               ("integrate", self._on_integrate),
                               ("about", self._on_about),
                               ("quit", lambda *_a: self.quit())):
@@ -408,6 +553,10 @@ class LphApplication(Adw.Application):
                 window.toast(_("Ready. Turn on a game to get started."))
 
         tasks.run(work, done)
+
+    def _on_settings(self, *_args: Any) -> None:
+        if self._window is not None:
+            SettingsDialog(self._window).present()
 
     def _on_check_update(self, *_args: Any) -> None:
         window = self._window

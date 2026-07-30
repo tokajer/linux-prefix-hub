@@ -84,6 +84,34 @@ def test_wrapper_without_a_command_complains():
     assert wrapper.main([]) == 2
 
 
+def test_the_wrapper_learns_saves_in_the_install_folder(fake_prefix,
+                                                        tmp_path,
+                                                        monkeypatch):
+    """Portal 2: nothing lands in the prefix, the saves go to the game dir."""
+    from linux_prefix_hub.adapters import base
+    from linux_prefix_hub.core import db, wrapper
+
+    game_dir = tmp_path / "common/Portal 2"
+    (game_dir / "portal2").mkdir(parents=True)
+    ctx = {"source": "steam", "app_id": "620", "game_name": "Portal 2",
+           "prefix_path": str(fake_prefix), "user_dir": "steamuser",
+           "game_dir": str(game_dir)}
+    monkeypatch.setattr(base, "context_from_env", lambda: ctx)
+
+    save = game_dir / "portal2/SAVE/765611/sp_a2.sav"
+    code = wrapper.main([
+        sys.executable, "-c",
+        f"import pathlib;p=pathlib.Path({str(save)!r});"
+        "p.parent.mkdir(parents=True,exist_ok=True);p.write_text('x')"])
+
+    assert code == 0
+    entry = db.get_prefix(db.fingerprint(fake_prefix))
+    assert entry["game_dir"] == str(game_dir)
+    found = [loc for loc in entry["storage_locations"]
+             if loc["where"] == "game_folder"]
+    assert found and "SAVE" in found[0]["win_path"]
+
+
 # --- what the game inherits ---------------------------------------------
 def _as_appimage(monkeypatch, appdir="/tmp/.mount_abc"):
     """Pretend we were started through the AppImage's AppRun."""
@@ -175,6 +203,50 @@ def test_status_lists_a_redirected_location(monkeypatch, capsys, fake_prefix):
     assert _run(monkeypatch, "--status") == 0
     out = capsys.readouterr().out
     assert "Quake" in out and "moved to /home/me/Games/Quake/Documents" in out
+
+
+def test_status_marks_install_folder_saves_as_immovable(monkeypatch, capsys,
+                                                        fake_prefix):
+    from linux_prefix_hub.core import db
+    db.upsert_prefix({
+        "source": "steam", "app_id": "620", "game_name": "Portal 2",
+        "prefix_path": str(fake_prefix), "user_dir": "steamuser",
+        "storage_locations": [{"type": "saves", "win_path": "portal2/SAVE",
+                               "where": "game_folder"}],
+    })
+    assert _run(monkeypatch, "--status") == 0
+    assert "stays there" in capsys.readouterr().out
+
+
+def test_redirect_explains_why_it_cannot_move_the_game_folder(monkeypatch,
+                                                              capsys,
+                                                              fake_prefix):
+    from linux_prefix_hub.core import db
+    db.upsert_prefix({
+        "source": "steam", "app_id": "620", "game_name": "Portal 2",
+        "prefix_path": str(fake_prefix), "user_dir": "steamuser",
+        "storage_locations": [{"type": "saves", "win_path": "portal2/SAVE",
+                               "where": "game_folder"}],
+    })
+    assert _run(monkeypatch, "--redirect", "Portal 2") == 1
+    out = capsys.readouterr().out
+    assert "its own folder" in out and "--open" in out
+
+
+def test_save_folder_is_configurable(monkeypatch, capsys, isolated_home):
+    from linux_prefix_hub.core import db, redirect
+    assert _run(monkeypatch, "--set-save-folder",
+                str(isolated_home / "Spielstaende")) == 0
+    assert "Spielstaende" in capsys.readouterr().out
+
+    assert db.redirect_root() == isolated_home / "Spielstaende"
+    assert redirect.default_target("Quake", "Documents") == \
+        isolated_home / "Spielstaende/Quake/Documents"
+
+
+def test_the_default_save_folder_is_our_own(isolated_home):
+    from linux_prefix_hub.core import db
+    assert db.redirect_root() == isolated_home / "Games/linux-prefix-hub"
 
 
 def test_language_flag_translates_this_run(monkeypatch, capsys):

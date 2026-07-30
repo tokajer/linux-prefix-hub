@@ -77,13 +77,31 @@ keep these signatures and the rest of the code will not notice.
 
 ## `core/snapshot.py` — storage-location detection
 
+Two **spaces**, named by `WHERE_PREFIX` / `WHERE_GAME`; every location carries
+`where`.
+
 - `snapshot(prefix, user_dir) -> {rel_path: mtime}` over `INTERESTING_SUBTREES`
   only, skipping `IGNORE_FRAGMENTS` (Temp, crash dumps, shader caches).
+- `snapshot_game_dir(game_dir) -> {rel_path: mtime} | None` over the install
+  folder, skipping `IGNORE_GAME_*` (logs, dumps, `steam_appid.txt`).
 - `diff(before, after) -> [rel_path]`
-- `classify_locations(changed) -> [location]` — aggregates to directory level
-  and guesses `type` (saves/config/unknown).
-- `save_pending` / `load_pending` — hands the "before" snapshot from the pre
-  hook to the post hook (Lutris runs them as two processes).
+- `classify_locations(changed, where) -> [location]` — aggregates to directory
+  level and guesses `type` (saves/config/unknown).
+- `save_pending` / `load_pending` — hands the "before" state of *both* spaces
+  from the pre hook to the post hook (Lutris runs them as two processes).
+  Reads a flat pre-install-folder file as a prefix-only state.
+
+**Why the install folder at all:** Source-engine games are the classic case.
+Portal 2 saves to `<install>/portal2/SAVE/<steamid>/` and touches nothing but
+`AppData/Local/Temp` inside the prefix — a prefix-only diff learns exactly
+nothing about it and the user sees "no folder detected" after a full session.
+
+**Watch out:** `snapshot_game_dir` returns `None` for "not covered" (no folder,
+or more than `MAX_GAME_DIR_FILES` entries — an install folder is not a prefix
+and we will not stall a launch walking it) and `{}` for "covered, empty". They
+are not interchangeable: a fresh install is legitimately near-empty, and
+folding that into "not covered" throws away the first launch, the one with the
+most to teach.
 
 **Building on it:** `_guess_type` is coarse; PCGamingWiki data would sharpen
 it. For very large prefixes the `rglob` could be pre-filtered by directory
@@ -127,12 +145,23 @@ last process in the prefix exits — always check `prefix_in_use` first.
 
 ## `core/redirect.py` — hybrid redirection
 
-`default_target`, `physical_path`, `redirect(fp, win_path, target, force)`,
-`undo(fp, win_path)`, `reapply(fp)`.
+`default_target`, `physical_path`, `location_path`, `redirect(fp, win_path,
+target, force)`, `undo(fp, win_path)`, `reapply(fp)`.
 
 Sequence: move data (never overwriting) → replace the physical folder with a
 symlink → write the registry → set the DB flags. `reapply` is the self-heal
 called before each launch.
+
+`default_target` resolves its root through `db.redirect_root()` — configurable
+(`redirect_root` in config.json, the Settings dialog, `--set-save-folder`),
+default `~/Games/linux-prefix-hub/`. Changing it never strands data: a moved
+location stores its absolute `redirect_target`, so only *future* moves follow
+the new root.
+
+`location_path(entry, loc)` answers "where are these files right now" for any
+location in either space — the redirect target if moved, the install folder for
+game-folder locations, the path inside the prefix otherwise. That is what the
+open-in-file-manager action needs.
 
 **Building on it:** locations outside a shell folder are refused on purpose.
 If you ever want to support them, it can only be the symlink half, and the
@@ -162,6 +191,18 @@ Everything degrades to an honest message when the `velopack` wheel is absent
 
 **Building on it:** `github_owner`/`github_repo`, or `update_url` for a
 completely different feed, in config.json — no rebuild needed.
+
+---
+
+## `core/desktop.py` — handing a folder to the desktop
+
+`open_folder(path) -> bool`. `xdg-open` first (it honours whatever file manager
+the user configured), then a per-desktop fallback chain. Never waits for the
+file manager, and refuses a path that is not a directory — a file manager's
+reaction to a missing folder ranges from silence to an error dialog, and a
+clean `False` the caller can report beats both.
+
+Lives in `core/`, not `gui/`, because `--open` uses it too.
 
 ---
 
@@ -291,12 +332,23 @@ presentation differs.
 
 ## `gui/app.py` — the window (GTK 4 / libadwaita)
 
-`main()`, `LphApplication`, `MainWindow`, `GameRow`, `LocationRow`, `esc()`.
+`main()`, `LphApplication`, `MainWindow`, `GameRow`, `LocationRow`,
+`FixedLocationRow`, `SettingsDialog`, `open_button()`, `esc()`.
 
 One `Adw.ExpanderRow` per game: a switch that calls the same
-`adapter.connect()` the CLI uses, and one `LocationRow` per learned save
-location whose switch calls `core.redirect`. `HookResult.manual` (Steam
-running) becomes a dialog with a copy button.
+`adapter.connect()` the CLI uses, and one row per learned save location.
+`LocationRow` (a shell folder) carries the switch that calls `core.redirect`;
+`FixedLocationRow` is the read-only twin for everything that cannot be moved —
+the install folder, or a prefix path outside any shell folder. Both carry an
+`open_button()`. Hiding those locations would be the wrong call: "where does
+this game save?" is the question the app exists to answer, and the answer is
+useful even when we cannot act on it.
+
+`SettingsDialog` edits `redirect_root` only. `Adw.PreferencesDialog` (libadwaita
+1.5+) and `Gtk.FileDialog` (GTK 4.10+) are both feature-detected — the window
+runs on whatever the *host* has, not on what the AppImage bundles.
+
+`HookResult.manual` (Steam running) becomes a dialog with a copy button.
 
 Two rules that are easy to break:
 

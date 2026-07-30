@@ -77,7 +77,7 @@ def test_redirect_moves_data_and_links_it_back(game, isolated_home):
     result = redirect.redirect(fingerprint, "Documents/My Games/Quake")
     assert result.ok, result.message
 
-    target = isolated_home / "Games/Quake/Documents"
+    target = isolated_home / "Games/linux-prefix-hub/Quake/Documents"
     assert (target / "My Games/Quake/save0.sav").read_text() == "progress"
 
     physical = prefix / "drive_c/users/steamuser/Documents"
@@ -99,7 +99,7 @@ def test_redirect_is_idempotent(game, isolated_home):
     fingerprint, _prefix = game
     assert redirect.redirect(fingerprint, "Documents/My Games/Quake").ok
     assert redirect.redirect(fingerprint, "Documents/My Games/Quake").ok
-    target = isolated_home / "Games/Quake/Documents"
+    target = isolated_home / "Games/linux-prefix-hub/Quake/Documents"
     assert (target / "My Games/Quake/save0.sav").exists()
 
 
@@ -114,7 +114,8 @@ def test_redirect_to_a_custom_target(game, tmp_path):
 def test_redirect_never_overwrites_existing_files(game, isolated_home):
     from linux_prefix_hub.core import redirect
     fingerprint, _prefix = game
-    target = isolated_home / "Games/Quake/Documents/My Games/Quake"
+    target = (isolated_home
+              / "Games/linux-prefix-hub/Quake/Documents/My Games/Quake")
     target.mkdir(parents=True)
     (target / "save0.sav").write_text("older backup")
 
