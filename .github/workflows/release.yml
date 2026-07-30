@@ -1,0 +1,91 @@
+name: Release AppImage
+
+# Tag a version and everything else happens here:
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The job builds the AppImage, generates the .zsync file next to it and
+# publishes both plus SHA256SUMS as a GitHub release. That release is what
+# GearLever, AppImageUpdate and our own `--update` pull from -- the embedded
+# update information points at exactly this repo's "latest" release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without the leading v)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches __version__
+        run: |
+          CODE="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' \
+            src/linux_prefix_hub/__init__.py)"
+          if [ "${CODE}" != "${{ steps.version.outputs.version }}" ]; then
+            echo "Tag says ${{ steps.version.outputs.version }}, code says ${CODE}." >&2
+            echo "Bump __version__ (and pyproject) before tagging." >&2
+            exit 1
+          fi
+
+      # zsync: appimagetool shells out to zsyncmake to produce the .zsync
+      # file that makes delta self-updates possible.
+      # desktop-file-utils: appimagetool validates our .desktop with it.
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsync desktop-file-utils
+
+      - name: Build AppImage
+        run: ./packaging/build-appimage.sh "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test the AppImage
+        run: |
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          APP="$(ls build/LinuxPrefixHub-*-x86_64.AppImage)"
+          chmod +x "$APP"
+          # Runs in a throwaway HOME so the self-heal cannot touch the runner.
+          HOME="$(mktemp -d)" "$APP" --version
+          HOME="$(mktemp -d)" "$APP" --scan
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LinuxPrefixHub-${{ steps.version.outputs.version }}-x86_64
+          path: |
+            build/*.AppImage
+            build/*.zsync
+            build/SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/*.AppImage build/*.zsync \
+              build/SHA256SUMS --clobber
+          else
+            gh release create "$TAG" \
+              --title "Linux Prefix Hub ${{ steps.version.outputs.version }}" \
+              --generate-notes \
+              build/*.AppImage build/*.zsync build/SHA256SUMS
+          fi

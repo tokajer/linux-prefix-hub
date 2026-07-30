@@ -1,28 +1,44 @@
 #!/usr/bin/env bash
-# AppRun -- Einstiegspunkt im AppImage.
+# AppRun -- entry point inside the AppImage.
 #
-# $APPIMAGE wird von der AppImage-Runtime gesetzt und zeigt auf die .AppImage-
-# Datei am aktuellen (evtl. wandernden) Ort. integrate.py nutzt das, um sich
-# an den festen Ort zu kopieren.
+# $APPIMAGE is set by the AppImage runtime and points at the .AppImage file at
+# its current (possibly wandering) location. core/integrate.py uses it to copy
+# itself to the fixed location.
 #
-# Self-Heal: bei JEDEM normalen Start (ohne Sondermodus) sicherstellen, dass
-# Shims + systemd-Unit existieren und auf den festen Ort zeigen. So ueberlebt
-# die Integration auch, wenn der Nutzer mal aus /tmp gestartet hat.
+# Self-heal: on every NORMAL start (no special mode) make sure the shims, the
+# systemd unit and the menu entry exist and point at the fixed location. That
+# way the integration survives even if the user launched us from /tmp once.
 
+set -u
 HERE="$(dirname "$(readlink -f "${0}")")"
-export PYTHONPATH="${HERE}/usr/lib/python:${PYTHONPATH}"
-PYTHON="${HERE}/usr/bin/python3"
-# Fallback auf System-Python, falls kein gebuendeltes dabei ist:
+export APPDIR="${HERE}"
+
+# Bundled Python (python-appimage layout), with graceful fallbacks.
+PYTHON=""
+for candidate in "${HERE}"/opt/python*/bin/python3.* "${HERE}/usr/bin/python3"; do
+  if [ -x "${candidate}" ]; then
+    PYTHON="${candidate}"
+    break
+  fi
+done
+if [ -n "${PYTHON}" ] && [ -d "$(dirname "$(dirname "${PYTHON}")")/lib" ]; then
+  export PYTHONHOME="$(dirname "$(dirname "${PYTHON}")")"
+fi
 [ -x "${PYTHON}" ] || PYTHON="$(command -v python3)"
 
-# Sondermodi direkt durchreichen (wrapper/daemon muessen schnell & ohne
-# Self-Heal-Overhead sein):
-case "${1}" in
-  --wrapper|--daemon|--integrate|--scan|--status)
-    exec "${PYTHON}" -m deinapp "$@"
+# Second home for the app code, used when it is not installed into the
+# bundled interpreter's site-packages.
+export PYTHONPATH="${HERE}/usr/lib/python:${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE=1
+
+# Pass the shim modes straight through: these run on every game launch and
+# must not pay for the self-heal round trip.
+case "${1:-}" in
+  --wrapper|--hook|--daemon)
+    exec "${PYTHON}" -m linux_prefix_hub "$@"
     ;;
 esac
 
-# Normalstart: leise self-heal, dann GUI/Welcome
-"${PYTHON}" -m deinapp --integrate >/dev/null 2>&1 || true
-exec "${PYTHON}" -m deinapp "$@"
+# Normal start: quietly self-heal, then run the requested mode / the UI.
+"${PYTHON}" -m linux_prefix_hub --integrate >/dev/null 2>&1 || true
+exec "${PYTHON}" -m linux_prefix_hub "$@"

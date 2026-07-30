@@ -1,17 +1,12 @@
-"""Tests gegen Fake-Umgebungen -- kein echtes Steam noetig.
+"""Core: VDF, snapshots, the prefix DB and the translation layer."""
+from __future__ import annotations
 
-Ausfuehren:  pytest    (oder: python -m pytest tests/)
-"""
-import os
 import time
-from pathlib import Path
-
-import pytest
 
 
-# --- VDF-Parser ----------------------------------------------------------
+# --- VDF parser ----------------------------------------------------------
 def test_vdf_parses_appmanifest():
-    from deinapp.core import vdf
+    from linux_prefix_hub.core import vdf
     sample = '''
     "AppState"
     {
@@ -28,7 +23,7 @@ def test_vdf_parses_appmanifest():
 
 
 def test_vdf_parses_libraryfolders():
-    from deinapp.core import vdf
+    from linux_prefix_hub.core import vdf
     libs = '''
     "libraryfolders"
     {
@@ -41,9 +36,20 @@ def test_vdf_parses_libraryfolders():
     assert "/mnt/games/SteamLibrary" in paths
 
 
-# --- Snapshot-Diff -------------------------------------------------------
+def test_vdf_roundtrip_keeps_values_and_order():
+    from linux_prefix_hub.core import vdf
+    data = {"UserLocalConfigStore": {
+        "Software": {"Valve": {"Steam": {"apps": {
+            "1091500": {"LaunchOptions": '"/home/me/bin/hook" %command%'},
+        }}}},
+    }}
+    again = vdf.loads(vdf.dumps(data))
+    assert again == data
+
+
+# --- Snapshot diff -------------------------------------------------------
 def test_snapshot_detects_save_location(tmp_path):
-    from deinapp.core import snapshot
+    from linux_prefix_hub.core import snapshot
     udir = tmp_path / "drive_c/users/steamuser"
     (udir / "Documents").mkdir(parents=True)
 
@@ -54,81 +60,138 @@ def test_snapshot_detects_save_location(tmp_path):
     (save / "MainSave.sav").write_text("x")
 
     after = snapshot.snapshot(tmp_path, "steamuser")
-    changed = snapshot.diff(before, after)
-    locs = snapshot.classify_locations(changed)
+    locations = snapshot.classify_locations(snapshot.diff(before, after))
 
-    assert any(l["type"] == "saves" for l in locs)
-    assert any("Cyberpunk" in l["win_path"] for l in locs)
+    assert any(loc["type"] == "saves" for loc in locations)
+    assert any("Cyberpunk" in loc["win_path"] for loc in locations)
 
 
-# --- DB-Idempotenz -------------------------------------------------------
-def test_db_preserves_redirected_flag(tmp_path, monkeypatch):
-    # DB in tmp umbiegen
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    import importlib
-    from deinapp.core import paths as P
-    importlib.reload(P)
-    from deinapp.core import db
-    importlib.reload(db)
+def test_snapshot_ignores_wine_scratch_space(tmp_path):
+    from linux_prefix_hub.core import snapshot
+    udir = tmp_path / "drive_c/users/steamuser"
+    temp = udir / "AppData/Local/Temp/wine"
+    temp.mkdir(parents=True)
+    (temp / "junk.tmp").write_text("x")
 
-    entry = {
-        "source": "steam", "app_id": "1091500",
-        "game_name": "Cyberpunk 2077",
-        "prefix_path": str(tmp_path / "pfx"),
-        "user_dir": "steamuser",
-        "storage_locations": [
-            {"type": "saves", "win_path": "Documents/CP", "redirected": False},
-        ],
-    }
-    fp = db.upsert_prefix(entry)
+    taken = snapshot.snapshot(tmp_path, "steamuser")
+    assert taken == {}
 
-    # Nutzer setzt redirected=True
-    d = db.load_prefixes()
-    d[fp]["storage_locations"][0]["redirected"] = True
-    db.save_prefixes(d)
 
-    # Erneuter Scan (upsert) darf das nicht kippen
-    db.upsert_prefix(entry)
-    d2 = db.load_prefixes()
-    assert d2[fp]["storage_locations"][0]["redirected"] is True
+def test_pending_snapshot_survives_between_processes():
+    from linux_prefix_hub.core import snapshot
+    snapshot.save_pending("abc123", {"Documents/a.sav": 1.5})
+    assert snapshot.load_pending("abc123") == {"Documents/a.sav": 1.5}
+    # Consumed: a stale snapshot must not leak into the next launch.
+    assert snapshot.load_pending("abc123") == {}
+
+
+# --- Prefix DB -----------------------------------------------------------
+def _entry(tmp_path, **over):
+    return {"source": "steam", "app_id": "1091500",
+            "game_name": "Cyberpunk 2077",
+            "prefix_path": str(tmp_path / "pfx"), "user_dir": "steamuser",
+            "storage_locations": [
+                {"type": "saves", "win_path": "Documents/CP",
+                 "redirected": False}],
+            **over}
+
+
+def test_db_preserves_user_decisions_on_rescan(tmp_path):
+    from linux_prefix_hub.core import db
+    fingerprint = db.upsert_prefix(_entry(tmp_path))
+
+    db.update_location(fingerprint, "Documents/CP", redirected=True,
+                       redirect_target="/home/me/Games/CP")
+    db.set_managed(fingerprint, True)
+
+    db.upsert_prefix(_entry(tmp_path))          # a rescan comes along
+
+    stored = db.get_prefix(fingerprint)
+    assert stored["storage_locations"][0]["redirected"] is True
+    assert stored["storage_locations"][0]["redirect_target"] == \
+        "/home/me/Games/CP"
+    assert stored["managed"] is True
+
+
+def test_db_merges_new_locations(tmp_path):
+    from linux_prefix_hub.core import db
+    fingerprint = db.upsert_prefix(_entry(tmp_path))
+    db.upsert_prefix(_entry(tmp_path, storage_locations=[
+        {"type": "config", "win_path": "AppData/Local/CP"}]))
+    paths = {loc["win_path"]
+             for loc in db.get_prefix(fingerprint)["storage_locations"]}
+    assert paths == {"Documents/CP", "AppData/Local/CP"}
+
+
+def test_db_resolve_by_name_and_id(tmp_path):
+    from linux_prefix_hub.core import db
+    fingerprint = db.upsert_prefix(_entry(tmp_path))
+    assert db.resolve("1091500")[0] == fingerprint
+    assert db.resolve("cyberpunk")[0] == fingerprint
+    assert db.resolve("nope") is None
 
 
 def test_fingerprint_stable(tmp_path):
-    from deinapp.core import db
+    from linux_prefix_hub.core import db
     p = tmp_path / "pfx"
     p.mkdir()
     assert db.fingerprint(p) == db.fingerprint(str(p))
 
 
-# --- Steam-Discovery -----------------------------------------------------
-def test_steam_multi_library_discovery(tmp_path, monkeypatch):
-    root = tmp_path / ".steam/steam"
-    steamapps = root / "steamapps"
-    steamapps.mkdir(parents=True)
-    lib2 = tmp_path / "games/SteamLibrary/steamapps"
-    lib2.mkdir(parents=True)
-
-    (steamapps / "libraryfolders.vdf").write_text(
-        f'"libraryfolders"{{"0"{{"path" "{root}"}}'
-        f'"1"{{"path" "{tmp_path / "games/SteamLibrary"}"}}}}')
-    (steamapps / "appmanifest_1091500.acf").write_text(
-        '"AppState"{"appid" "1091500" "name" "Cyberpunk 2077" '
-        '"StateFlags" "4" "installdir" "Cyberpunk 2077"}')
-    (lib2 / "appmanifest_1245620.acf").write_text(
-        '"AppState"{"appid" "1245620" "name" "ELDEN RING" '
-        '"StateFlags" "1026" "installdir" "ELDEN RING"}')
-
-    from deinapp.adapters import steam
-    monkeypatch.setattr(steam, "STEAM_ROOT_CANDIDATES", [str(root)])
-
-    games = {g["app_id"]: g for g in steam.iter_installed_games()}
-    assert "1091500" in games and games["1091500"]["installed"] is True
-    assert "1245620" in games and games["1245620"]["installed"] is False
+# --- Translation ---------------------------------------------------------
+def test_german_locale_translates(monkeypatch):
+    from linux_prefix_hub.core import i18n
+    monkeypatch.delenv("LPH_LANG", raising=False)
+    monkeypatch.setenv("LANG", "de_AT.utf8")
+    i18n.set_language(None)
+    assert i18n.language() == "de"
+    assert i18n.translate("Disconnected.") == "Verbindung entfernt."
 
 
-def test_user_dir_prefers_steamuser(tmp_path):
-    from deinapp.adapters import steam
-    pfx = tmp_path / "pfx"
-    (pfx / "drive_c/users/steamuser").mkdir(parents=True)
-    (pfx / "drive_c/users/Public").mkdir(parents=True)
-    assert steam.user_dir_for(str(pfx)) == "steamuser"
+def test_other_locale_stays_english(monkeypatch):
+    from linux_prefix_hub.core import i18n
+    monkeypatch.delenv("LPH_LANG", raising=False)
+    monkeypatch.setenv("LANG", "fr_FR.UTF-8")
+    i18n.set_language(None)
+    assert i18n.language() == "en"
+    assert i18n.translate("Disconnected.") == "Disconnected."
+
+
+def test_config_overrides_the_locale(monkeypatch):
+    from linux_prefix_hub.core import db, i18n
+    monkeypatch.delenv("LPH_LANG", raising=False)
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    db.set_config("language", "de")
+    i18n.set_language(None)
+    assert i18n.language() == "de"
+
+
+def test_placeholders_and_unknown_strings(monkeypatch):
+    from linux_prefix_hub.core import i18n
+    monkeypatch.setenv("LPH_LANG", "de")
+    i18n.set_language(None)
+    assert i18n.translate("{n} game(s) found:", n=3) == "3 Spiel(e) gefunden:"
+    assert i18n.translate("never translated") == "never translated"
+
+
+def test_broken_translation_falls_back_to_english(monkeypatch):
+    from linux_prefix_hub.core import i18n
+    i18n.set_language("de")
+    monkeypatch.setitem(i18n._catalog, "Moved to {target}.", "Nach {ziel}.")
+    assert i18n.translate("Moved to {target}.", target="/x") == "Moved to /x."
+
+
+def test_every_german_string_keeps_its_placeholders():
+    """A translator typo must not become a runtime crash."""
+    import json
+    import re
+
+    from linux_prefix_hub.core import i18n
+    catalog = json.loads(
+        (i18n.LOCALES_DIR / "de.json").read_text(encoding="utf-8"))
+    pattern = re.compile(r"{(\w+)}")
+    for source, translated in catalog.items():
+        if source.startswith("_"):
+            continue
+        assert set(pattern.findall(source)) == \
+            set(pattern.findall(translated)), source

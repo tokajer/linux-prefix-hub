@@ -1,196 +1,233 @@
-# Architektur
+# Architecture
 
-Diese Datei erklärt das *Warum* hinter dem Aufbau — die Entscheidungen, die wir
-getroffen haben, und die Fallstricke, die dahinterstehen. Wenn du in VSCodium
-weiterbaust, lies das zuerst; es erspart dir, dieselben Sackgassen nochmal zu
-durchdenken.
-
----
-
-## Leitidee: „Windows-Gefühl"
-
-Der Nutzer soll **nichts** von Prefixen, `steamuser`, `compatdata`, Z:-Laufwerken
-oder `user.reg` wissen müssen. Er sieht Spiele, einen Speicherort und einen
-„Spielen"-Knopf (in seinem gewohnten Launcher). Alle Linux/Wine-Begriffe werden
-versteckt. Jede Design-Entscheidung unten dient diesem Ziel.
-
-Zwei Konsequenzen daraus:
-
-1. Der Nutzer bleibt in **seinem gewohnten Launcher** (Steam/Lutris/Heroic). Wir
-   klinken uns unsichtbar dazwischen statt einen eigenen Launcher zu bauen.
-2. **Erkennung vor Umleitung.** Der wertvollste Teil ist zu *wissen*, wo ein
-   Spiel speichert. Das Umleiten ist optional und setzt darauf auf.
+This file explains the *why* — the decisions behind the structure and the
+pitfalls that motivated them. Read it before making changes; it saves you from
+re-deriving the same dead ends.
 
 ---
 
-## Die vier tragenden Entscheidungen
+## Guiding idea: it should feel like Windows
 
-### 1. Adapter-Muster: Quellen sind austauschbar, der Kern ist geteilt
+The user must not need to know about prefixes, `steamuser`, `compatdata`, the
+Z: drive or `user.reg`. They see games, a storage location and a "play" button
+in the launcher they already use. Every decision below serves that.
+
+Two consequences:
+
+1. The user stays in **their own launcher** (Steam/Lutris/Heroic). We hook in
+   invisibly instead of building yet another launcher.
+2. **Detection before redirection.** The valuable part is *knowing* where a
+   game saves. Moving those saves is optional and builds on top.
+
+---
+
+## The five load-bearing decisions
+
+### 1. Adapter pattern: sources are swappable, the core is shared
 
 ```
 ┌─────────┐  ┌─────────┐  ┌─────────┐
-│ Steam   │  │ Lutris  │  │ Heroic  │   ← Adapter (Discovery + Hook setzen)
-│ Adapter │  │ Adapter │  │ Adapter │      unterschiedliche Config-Formate
+│ Steam   │  │ Lutris  │  │ Heroic  │   ← adapters (discovery + hook)
+│ adapter │  │ adapter │  │ adapter │      different config formats
 └────┬────┘  └────┬────┘  └────┬────┘
-     └───────────┼───────────┘
-          ┌──────▼──────┐
-          │  Core        │   ← identisch für alle Quellen
-          │  (Wrapper)   │
-          └──────┬───────┘
-       ┌─────────┼─────────┐
-   ┌───▼───┐ ┌───▼────┐ ┌──▼─────┐
-   │Snapshot│ │Redirect│ │Prefix- │
-   │        │ │(später)│ │DB      │
-   └────────┘ └────────┘ └────────┘
+     └────────────┼────────────┘
+           ┌──────▼──────┐
+           │    Core     │   ← identical for every source
+           │  (wrapper)  │
+           └──────┬──────┘
+        ┌─────────┼─────────┐
+    ┌───▼────┐ ┌──▼─────┐ ┌─▼──────┐
+    │Snapshot│ │Redirect│ │Prefix  │
+    │        │ │        │ │DB      │
+    └────────┘ └────────┘ └────────┘
 ```
 
-Eine neue Quelle (z. B. Bottles) = **nur ein neuer Adapter**, der Core bleibt
-unangetastet. Der Adapter macht immer dreierlei:
-- **Discovery**: Spiele + Prefix + `user_dir` finden.
-- **Hook setzen**: den Wrapper in die Launch-Mechanik der Quelle einklinken.
-- **Kontext liefern**: beim Spielstart Prefix/Name an den Core übergeben.
+A new source (Bottles, say) is **one new adapter**; the core stays untouched.
+Every adapter does three things: discovery, installing the hook, and telling
+the core which game is starting.
 
-Config-Formate pro Quelle:
+| Source | Config | Hook mechanism | Manual step? |
+|--------|--------|----------------|--------------|
+| Steam | VDF (`appmanifest`, `libraryfolders`, `localconfig`) | `%command%` wrapper in launch options | only while Steam runs |
+| Lutris | YAML (`~/.config/lutris/games/*.yml`) | `prelaunch_command` / `postexit_command` | no |
+| Heroic | JSON (`~/.config/heroic/GamesConfig/*.json`) | `wrapperOptions` | no |
 
-| Quelle | Config | Hook-Mechanik | Manueller Schritt? |
-|--------|--------|---------------|--------------------|
-| Steam  | VDF (`appmanifest`, `libraryfolders`) | `%command%`-Wrapper in Launch-Options | **ja, einmalig** |
-| Lutris | YAML (`~/.config/lutris/games/*.yml`) | `prelaunch_command` / `postexit_command` | nein |
-| Heroic | JSON (`~/.config/heroic/GamesConfig/*.json`) | Wrapper / pre-launch-Script | nein |
+Steam is the awkward one: it keeps its config in memory and writes it out when
+it exits, so anything we write while it runs is lost. With Steam closed we
+write `localconfig.vdf` ourselves (with a `.bak`); with Steam running we hand
+the user the string and put it on their clipboard. There is no third option.
 
-Steam ist der Sonderfall: den einen Launch-Options-Schritt kann man nicht
-wegzaubern (Steams Install-/Config-UI ist eine Blackbox). Lutris und Heroic
-klinken sich selbst ein.
+### 2. Two hook shapes, one code path
 
-### 2. Speicherort-Erkennung per Snapshot-Diff
+Steam and Heroic **wrap** the game command — one process, both snapshots in
+memory. Lutris calls a **pre** and a **post** command — two processes, so the
+"before" snapshot is written to `~/.config/linux-prefix-hub/snapshots/<fp>.json`
+and consumed by the second call. `core/wrapper.py` implements both shapes over
+the same `_before()` / `_after()` pair.
 
-Es gibt **keine API**, die sagt „Spiel X speichert in Y". Die Info ist über
-mind. vier Orte verstreut: `AppData/Roaming|Local`, `Documents/My Games`,
-`Saved Games`, teils im Installationsordner selbst oder in Steam Cloud.
+### 3. Detecting storage locations by snapshot diff
 
-Unser zuverlässigster Weg: **Snapshot vor Spielstart, Snapshot nach Spielende,
-Diff.** Was sich geändert hat, ist ein Speicherort. Das findet auch exotische
-Orte ohne Vorwissen („Learn"-Modus). Deshalb wrappt der Core den Spielstart —
-so bekommt er die Snapshots automatisch, ohne dass der Nutzer „Snapshot"-Knöpfe
-drückt.
+There is **no API** that says "game X saves to Y". The information is spread
+over at least four places: `AppData/Roaming|Local`, `Documents/My Games`,
+`Saved Games`, sometimes the install folder itself or Steam Cloud.
 
-Ergänzbar (später) durch **PCGamingWiki**-Daten für Sofort-Treffer ohne Spielen,
-und eine Heuristik (`*.sav`, `My Games`, kürzlich geänderte Ordner).
+Our reliable route: **snapshot before launch, snapshot after exit, diff.**
+Whatever changed is a storage location. This finds exotic locations with zero
+prior knowledge, which is why the core wraps the launch at all.
 
-**Sonderfall Installationsordner:** Schreibt ein Spiel in seinen eigenen
-`steamapps/common/<Spiel>/`-Ordner, ist das *kein* Shell-Folder → per Registry
-nicht umleitbar. Wichtig, dass die App das *erkennt und anzeigt*, auch wenn sie
-es nicht umleiten kann.
+Noise is filtered out explicitly (`snapshot.IGNORE_FRAGMENTS`): `Temp`,
+`CrashDumps`, shader caches, `INetCache`. Without that, every game "saves" to
+half a dozen Windows scratch directories.
 
-### 3. Umleitung: Hybrid (Registry + Symlink) — optional, kommt später
+Later this can be complemented by **PCGamingWiki** data for instant hits
+without playing.
 
-Noch nicht implementiert, aber das Konzept steht fest, damit die DB schon darauf
-vorbereitet ist (`redirected`-Flag pro Speicherort):
+**Install-folder special case:** if a game writes into its own
+`steamapps/common/<Game>/`, that is *not* a shell folder → not redirectable via
+the registry. Important that the app *detects and shows* it even though it
+cannot move it.
 
-- **Registry** (`user.reg`, Keys unter `Shell Folders` / `User Shell Folders`)
-  ist der „offizielle" Weg — Wine/Proton wissen dann, wo die Ordner liegen.
-- **Symlink** am physischen Ort im Prefix ist das **Sicherheitsnetz**: manche
-  Spiele ignorieren die Registry und schreiben stur nach
-  `C:\users\steamuser\AppData\...`. Der Symlink fängt das ab.
+### 4. Redirection: hybrid (registry + symlink)
 
-Beide zeigen auf **dasselbe Ziel** im Home → kein Konflikt, und das Ganze ist
-**idempotent + selbstheilend**: Ein Proton-Update, das den Symlink killt, ist
-egal, weil die Daten im Home liegen und beim nächsten Start neu verlinkt werden.
+- The **registry** (`user.reg`, `Shell Folders` and `User Shell Folders`) is
+  the official way — Wine and well-behaved games follow it.
+- The **symlink** at the physical location inside the prefix is the safety
+  net: plenty of games ignore the registry and write straight to
+  `C:\users\steamuser\AppData\...`.
 
-Downloads hat als Registry-Key eine **GUID**
-(`{374DE290-123F-4565-9164-39C4925E467B}`), keinen Klartext-Namen — hier ist der
-Symlink-Fallback doppelt wertvoll.
+Both point at the **same** target, so they cannot disagree, and the whole
+thing is **idempotent and self-healing**: a Proton update that wipes the
+symlink does not matter, because the data lives in the home folder and
+`redirect.reapply()` relinks it before the next launch.
 
-### 4. Verpackung: AppImage mit fester Shim-Schicht
+Granularity is the **shell folder** (Documents, AppData/Roaming, …), because
+that is what the registry can express. Since a Proton prefix belongs to one
+game, "redirect Documents of this prefix" is exactly "one folder for this
+game" — `~/Games/<Game>/Documents`.
 
-Das Kernproblem von AppImage für *unsere* App: Es klinkt sich tief ein (Steam-
-Launch-Options, systemd-Daemon), aber ein AppImage wird nach `/tmp/.mount_XXXXXX`
-gemountet — **flüchtig und bei jedem Start anders benannt**. Ein fester
-Steam-Eintrag kann da nicht draufzeigen.
+Two hazards worth knowing:
 
-**Lösung — fester Shim, wanderndes AppImage:**
+- Downloads, Saved Games and LocalLow only have **GUID** value names
+  (`{374DE290-…}`), no readable ones. `registry.SHELL_FOLDERS` maps each folder
+  to *all* its names and writes them all.
+- Wine keeps the registry in memory and flushes it when the last process in
+  the prefix exits. Editing `user.reg` while the game runs is silently undone,
+  so `registry.prefix_in_use()` refuses.
+
+### 5. Packaging: AppImage with a fixed shim layer
+
+The core problem for *our* app: it hooks in deeply (Steam launch options,
+systemd service), but an AppImage is mounted at `/tmp/.mount_XXXXXX` —
+ephemeral and differently named on every start. A permanent Steam entry cannot
+point there.
+
+**Solution — fixed shims, wandering AppImage:**
 
 ```
-Steam Launch-Options → ~/.local/bin/deinapp-wrapper   (fester Pfad, nie geändert)
+Steam launch options → ~/.local/bin/linux-prefix-hub-wrapper   (never changes)
                               │
                               ▼
-                       ~/.local/share/deinapp/DeineApp.AppImage  (fester Ort)
+              ~/.local/share/linux-prefix-hub/LinuxPrefixHub.AppImage
 ```
 
-- Das AppImage **kopiert sich beim ersten Start** an den festen Ort
-  (`~/.local/share/deinapp/`) und läuft von dort. Downloads/Desktop sind nur der
-  Ablageort für den allerersten Start und dürfen danach weg.
-- Die **Shims** (`~/.local/bin/deinapp-{wrapper,daemon}`) sind winzige
-  Weiterleitungen an den festen Ort. Nur sie müssen persistent draußen liegen —
-  weil etwas, das *nur im AppImage* lebt, per Definition nicht existiert, wenn
-  das AppImage nicht läuft (und der Shim ist ja der, der es startet).
-- **Self-Heal:** `AppRun` ruft bei jedem Normalstart `--integrate` auf, damit
-  Shims/Unit auch dann wiederhergestellt werden, wenn der Nutzer mal aus `/tmp`
-  gestartet hat.
+- The AppImage **copies itself** to the fixed location on first start.
+  Downloads/Desktop are only the drop-off point and may be cleaned up after.
+- The **shims** are tiny forwarders. They are the only thing that must live
+  outside, because something that exists only *inside* the AppImage by
+  definition does not exist while the AppImage is not running — and the shim is
+  what starts it.
+- **Self-heal:** `AppRun` runs `--integrate` on every normal start, so the
+  shims and the service come back even if you launched from `/tmp` once.
 
-**GearLever:** wird *erkannt und respektiert* (wenn es das AppImage schon an
-einen festen Ort integriert hat, relozieren wir nicht selbst), aber **nicht
-vorausgesetzt** — sonst bräuchte der Nutzer Flatpak + GearLever + AppImage, was
-dem Einfachheits-Ziel widerspricht. Wer GearLever hat, profitiert von dessen
-Updates (wir betten zsync-Update-Info ein); wer nicht, wird von der App selbst
-integriert.
+**GearLever** is *detected and respected* (if it already placed the AppImage at
+a fixed location we do not relocate), but **never required** — otherwise users
+would need Flatpak + GearLever + AppImage, which contradicts the whole point.
 
-**Warum nicht Flatpak/nativ?** Flatpak-Sandbox müsste man für Steam-/Lutris-/
-Prefix-Zugriff so weit aufbohren, dass die Sandbox kaum noch Sinn ergibt, und
-Host-systemd aus Flatpak ist fummelig. AppImage mit Shim-Schicht passt besser.
-`pipx` bleibt der bequeme Dev-Weg.
+**Why not Flatpak/native?** A Flatpak sandbox would have to be opened up so far
+for Steam/Lutris/prefix access that it stops being a sandbox, and reaching host
+systemd from inside is fiddly. `pipx` stays the comfortable dev route.
 
 ---
 
-## Datenfluss beim Spielstart (der Wrapper)
+## Data flow on launch
 
 ```
-Steam "Spielen" → deinapp-wrapper %command%
+Steam "Play" → linux-prefix-hub-wrapper %command%
                         │
-   ┌────────────────────┼─────────────────────────┐
-   │ 1. SteamAppId aus ENV lesen (Steam setzt sie!)│
-   │ 2. Prefix + user_dir über Discovery finden    │
-   │ 3. Snapshot VORHER                             │
-   │ 4. exec echtes Spiel-Command, warten           │
-   │ 5. Snapshot NACHHER → Diff → Speicherorte      │
-   │ 6. in Prefix-DB schreiben (merge, idempotent)  │
-   └────────────────────────────────────────────────┘
+   ┌────────────────────┼──────────────────────────────┐
+   │ 1. which game? (env / adapter)                     │
+   │ 2. register in the DB, re-apply redirections       │
+   │ 3. snapshot BEFORE                                 │
+   │ 4. exec the real game command, wait                │
+   │ 5. snapshot AFTER → diff → storage locations       │
+   │ 6. merge into the prefix DB (idempotent)           │
+   └────────────────────────────────────────────────────┘
 ```
 
-Der Wrapper ist **read-only fürs Spiel** — er beobachtet nur, verändert nichts
-am Spielverhalten. Risikofrei. Umleitung wäre ein *zusätzlicher* Schritt vor 4.
+Step 2 is the only write, and it only touches folders the user already asked
+us to move. Everything else is observation. If any of it throws, the game
+still launches and its exit code is passed through — a save-game tracker that
+stops people from playing has failed at its job.
 
 ---
 
-## Neu-Spiel-Erkennung (der Watcher)
+## New-game detection
 
-Steam legt beim Installieren `appmanifest_<appid>.acf` an. Das Feld
-`StateFlags` unterscheidet „lädt noch" (z. B. `1026`) von „fertig installiert"
-(`& 4`). Der Watcher lauscht per **inotify** auf alle `steamapps`-Ordner (Multi-
-Library!) und meldet neu fertiggestellte Spiele per Desktop-Notification.
+Steam writes `appmanifest_<appid>.acf` on install; `StateFlags` distinguishes
+"still downloading" (e.g. `1026`) from "fully installed" (`& 4`). The watcher
+uses **inotify** on every library's `steamapps` (multi-library!) and reports
+newly completed installs as a desktop notification. The same loop re-scans
+Lutris and Heroic every minute — their configs change rarely enough.
 
-Fällt inotify (Paket `inotify_simple`) aus, gibt es einen **Poll-Fallback**, damit
-das Fundament auch dependency-frei läuft.
+Without `inotify_simple` it degrades to pure polling, so the core stays
+dependency-free.
 
-Derselbe Watcher kann später auch das Auftauchen von `compatdata/<appid>/pfx`
-erkennen (= zum ersten Mal gestartet) — der Moment für die optionale Umleitung.
-
----
-
-## Idempotenz — die wichtigste Invariante
-
-Sowohl Discovery-Scans als auch der Wrapper schreiben über `db.upsert_prefix()`.
-Diese Funktion **merged** und bewahrt Nutzer-Entscheidungen: ein erneuter Scan
-darf `redirected` (pro Speicherort) und `managed` (pro Prefix) **nie**
-zurücksetzen. Wenn du neue Felder hinzufügst, die der Nutzer steuert, ziehe sie
-in denselben Bewahr-Mechanismus (siehe `core/db.py`).
+The same watcher does the daily update check, at most one notification per
+version.
 
 ---
 
-## Fingerprint statt Quellen-Logik
+## Idempotency — the most important invariant
 
-Jeder Prefix wird über `sha256(realpath(prefix))[:16]` identifiziert
-(`db.fingerprint`). Dadurch ist es egal, *wer* den Prefix erzeugt hat — Steam,
-Lutris, Heroic oder custom. Ein Prefix ist immer an `system.reg` + `user.reg` +
-`drive_c/` erkennbar; das ist der universelle Anker für einen späteren
-generischen „finde alle Prefixe"-Scan.
+Both discovery scans and the wrapper write through `db.upsert_prefix()`. That
+function **merges** and preserves user decisions: a rescan must never reset
+`redirected`/`redirect_target` (per location) or `managed` (per game). New
+user-controlled fields belong in `USER_FIELDS` / `LOCATION_USER_FIELDS` in
+`core/db.py`, otherwise the next scan silently throws the user's choice away.
+
+---
+
+## Fingerprint instead of source logic
+
+Every prefix is identified by `sha256(realpath(prefix))[:16]` (`db.fingerprint`).
+It therefore does not matter *who* created it — Steam, Lutris, Heroic or a
+hand-rolled Wine setup. A prefix is always recognisable by `system.reg` +
+`user.reg` + `drive_c/` (`base.is_prefix`), which is the universal anchor for a
+future generic "find all prefixes" scan.
+
+---
+
+## Never reformat someone else's config
+
+We write into three foreign config formats, and each one is handled so that a
+user's file survives intact:
+
+- **Lutris YAML** — edited line by line inside the `system:` block. Comments,
+  ordering and formatting stay. (Our YAML reader is deliberately read-only.)
+- **Steam VDF** — parsed and rewritten, but with key order preserved and a
+  `.bak` alongside.
+- **Heroic JSON** — parsed and rewritten (JSON has no comments to lose), `.bak`
+  alongside.
+
+A tool that reformats the config of a program it does not own will eventually
+lose someone's settings, and they will never trust it again.
+
+---
+
+## Language
+
+Source strings are English and live in the code. `locales/de.json` maps them to
+German. The UI language is the desktop locale unless the config or `--lang`
+says otherwise. English can never be "missing", a broken translation falls back
+to English instead of crashing, and a test asserts that every German string
+keeps the placeholders of its source.

@@ -1,117 +1,124 @@
-# Entwickeln in VSCodium
+# Developing
 
-Schritt-für-Schritt, um das Projekt in VSCodium lauffähig zu haben und
-weiterzuentwickeln.
+Getting the project running and working on it.
 
 ---
 
-## 1. Repo klonen / entpacken
-
-Wenn du das ZIP bekommen hast: entpacken und den Ordnerinhalt in dein (leeres)
-git-Repo kopieren. Das `.git` initialisierst du dann einfach:
-
-```bash
-cd deinapp
-git init
-git add .
-git commit -m "Fundament: Steam-Discovery, Snapshot-Lernen, DB, Watcher, AppImage-Integration"
-```
-
-## 2. Python-Umgebung
-
-Empfohlen: virtuelles Environment, damit die Extras isoliert bleiben.
+## 1. Python environment
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[full]"     # editable install + inotify_simple + vdf
+pip install -e ".[full,dev]"     # editable + optional extras + pytest/ruff
 ```
 
-`-e` (editable) heißt: Code-Änderungen wirken sofort, ohne neu zu installieren.
+`-e` (editable) means code changes take effect immediately. The core also runs
+**without** `[full]` (dependency-free: own VDF/YAML readers, poll fallback) —
+and CI tests both paths, so do not accidentally make an extra mandatory.
 
-Der Kern läuft auch **ohne** `[full]` (dependency-frei, Poll-Fallback + eigener
-VDF-Parser) — praktisch, wenn du nur schnell was testen willst:
+## 2. Running it safely
 
 ```bash
-pip install -e .
+python -m linux_prefix_hub --scan      # read-only, safe on your real system
+python -m linux_prefix_hub --status
 ```
 
-## 3. Empfohlene VSCodium-Extensions
-
-- **Python** (ms-python.python — im Open-VSX-Marketplace verfügbar)
-- **Pylance** oder **Jedi** für Autovervollständigung
-- **Ruff** (charliermarsh.ruff) für Linting/Formatting — optional, aber angenehm
-
-Interpreter auf `.venv/bin/python` setzen: `Ctrl+Shift+P` →
-„Python: Select Interpreter" → `.venv` auswählen.
-
-## 4. Ausprobieren (ohne echtes Steam)
-
-Die Module sind gegen Fake-Umgebungen testbar. Schnelltest der Discovery:
+Anything that *sets up* (the default start, `--integrate`, `--connect`) writes
+shims, a systemd unit, a desktop entry and launcher config. Use a throwaway
+HOME for that:
 
 ```bash
-python -m deinapp --scan      # zeigt gefundene Steam-Spiele (echt, auf deinem System)
-python -m deinapp --status    # zeigt bisher gelernte Speicherorte
-python -m deinapp --integrate # legt Shims + systemd-Unit an (idempotent)
+HOME=/tmp/lph-test python -m linux_prefix_hub
+HOME=/tmp/lph-test LPH_LANG=de python -m linux_prefix_hub --scan
 ```
 
-Für isolierte Tests kannst du HOME umbiegen (so haben wir entwickelt):
+`LPH_LANG` overrides the language for one run, which is also how the tests keep
+their assertions deterministic.
+
+## 3. Tests
 
 ```bash
-HOME=/tmp/test_home \
-XDG_DATA_HOME=/tmp/test_home/.local/share \
-XDG_CONFIG_HOME=/tmp/test_home/.config \
-python -m deinapp --scan
+pytest -q          # ~66 tests, well under a second
 ```
 
-## 5. Debuggen in VSCodium
+They build fake Steam/Lutris/Heroic installs and fake prefixes under `tmp_path`
+and redirect `HOME` (see `tests/conftest.py`) — no real launcher needed, and
+nothing touches your own config.
 
-Es liegt eine `.vscode/launch.json` bei mit fertigen Konfigurationen:
-- **deinapp: scan** — Discovery
-- **deinapp: status** — DB-Inhalt
-- **deinapp: integrate** — Self-Setup
-- **deinapp: welcome** — Einrichtungs-Flow
+New adapter? At minimum test discovery *and* hook injection, including that the
+user's own settings survive the injection.
 
-Auswählen im „Run and Debug"-Panel (`Ctrl+Shift+D`), Breakpoints setzen, F5.
-
-> Hinweis: VSCodium nutzt den Open-VSX-Marketplace, nicht den von MS-VSCode. Die
-> genannten Extensions sind dort vorhanden. Der Debugger (`debugpy`) kommt mit der
-> Python-Extension.
-
-## 6. Projekt-Layout
-
-```
-deinapp/
-├── src/deinapp/          # der Code (src-Layout, sauber importierbar)
-│   ├── __main__.py       # Entrypoint & Modus-Dispatch
-│   ├── core/             # paths, db, vdf, snapshot, wrapper, integrate
-│   ├── adapters/         # steam  (später: lutris, heroic)
-│   ├── daemon/           # watcher
-│   └── gui/              # welcome  (später: GTK4-Oberfläche)
-├── packaging/            # AppRun + build-appimage.sh
-├── docs/                 # ARCHITECTURE, MODULES, ROADMAP, dieses File
-├── tests/                # Beispiel-Tests gegen Fake-Umgebungen
-├── pyproject.toml
-└── README.md
-```
-
-## 7. Tests laufen lassen
+## 4. Lint
 
 ```bash
-pip install pytest
-pytest                    # oder: python -m pytest tests/
+ruff check src tests
 ```
 
-Die mitgelieferten Tests bauen Fake-Steam-/Prefix-Umgebungen unter `/tmp` und
-prüfen Discovery, Snapshot-Diff und DB-Idempotenz — kein echtes Steam nötig.
+The rule set is pinned in `pyproject.toml` so a global ruff config cannot make
+your run disagree with CI. Line length is 79.
 
-## 8. Wenn du am AppImage baust
+## 5. VSCodium / VS Code
 
-Das AppImage baust du auf deinem Rechner (braucht `appimagetool` + Netzwerk):
+`.vscode/launch.json` ships with ready-made configurations: **scan**,
+**status**, **integrate**, **welcome (throwaway HOME)** and **welcome in
+German**. Pick one in "Run and Debug" (`Ctrl+Shift+D`), set breakpoints, F5.
+
+Recommended extensions (all on Open VSX, so VSCodium works):
+**Python** (`ms-python.python`), **Pylance** or **Jedi**, **Ruff**
+(`charliermarsh.ruff`).
+
+Set the interpreter to `.venv/bin/python`: `Ctrl+Shift+P` → "Python: Select
+Interpreter".
+
+## 6. Project layout
+
+```
+linux-prefix-hub/
+├── src/linux_prefix_hub/     # the code (src layout)
+│   ├── __main__.py           # CLI & mode dispatch
+│   ├── core/                 # paths, i18n, db, vdf, yamlite, snapshot,
+│   │                         # wrapper, registry, redirect, integrate, updater
+│   ├── adapters/             # base, steam, lutris, heroic
+│   ├── daemon/               # watcher
+│   ├── gui/                  # welcome (later: GTK4)
+│   └── locales/              # de.json (English is the source language)
+├── packaging/                # AppRun, build-appimage.sh, make-icon.py, icon
+├── .github/workflows/        # ci.yml, release.yml
+├── docs/                     # ARCHITECTURE, MODULES, ROADMAP, RELEASING, this
+├── tests/                    # against fake environments
+├── CLAUDE.md                 # compact orientation map
+└── pyproject.toml
+```
+
+## 7. Building the AppImage locally
 
 ```bash
+sudo dnf install zsync            # or: apt install zsync   (optional but
+                                  # needed for update information)
 ./packaging/build-appimage.sh
 ```
 
-Vorher in dem Skript `GH_OWNER`/`GH_REPO` auf dein Repo setzen und ein echtes
-Icon (`deinapp.png`) hinterlegen. Details in `docs/MODULES.md`.
+Needs network (it fetches a relocatable CPython and appimagetool). Output lands
+in `build/`. Without `zsyncmake` it still builds, just without the delta-update
+information — fine for testing, not for a release.
+
+Test the result in a throwaway HOME:
+
+```bash
+HOME=/tmp/lph-test ./build/LinuxPrefixHub-*-x86_64.AppImage --scan
+```
+
+## 8. Working on translations
+
+Source strings are English and live in the code inside `_()`. To translate:
+
+1. `src/linux_prefix_hub/locales/de.json` — key is the exact English string.
+2. Keep every `{placeholder}` identical; `test_core.py` fails otherwise.
+3. New language: copy `de.json` to `<code>.json`. It is picked up
+   automatically (`i18n.available_languages`).
+
+## 9. Conventions in short
+
+`from __future__ import annotations`, type annotations, 79 columns, defensive
+parsing of foreign files, lazy imports in CLI branches, and anything that needs
+real hardware marked `VERIFY-ON-DEVICE`. `CONTRIBUTING.md` has the full list.

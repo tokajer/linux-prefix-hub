@@ -1,0 +1,55 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "scan (list games)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linux_prefix_hub",
+      "args": ["--scan"],
+      "console": "integratedTerminal",
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+    },
+    {
+      "name": "status (learned locations)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linux_prefix_hub",
+      "args": ["--status"],
+      "console": "integratedTerminal",
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+    },
+    {
+      "name": "integrate (shims + service)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linux_prefix_hub",
+      "args": ["--integrate"],
+      "console": "integratedTerminal",
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+    },
+    {
+      "name": "welcome (setup flow, throwaway HOME)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linux_prefix_hub",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "HOME": "/tmp/lph-test-home"
+      }
+    },
+    {
+      "name": "welcome in German",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linux_prefix_hub",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "HOME": "/tmp/lph-test-home",
+        "LPH_LANG": "de"
+      }
+    }
+  ]
+}

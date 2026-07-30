@@ -1,119 +1,85 @@
 # Roadmap
 
-Die nächsten Bausteine in sinnvoller Reihenfolge, jeweils mit dem Kontext aus den
-Design-Entscheidungen (damit du nicht neu überlegen musst, *warum* etwas so
-gedacht ist).
+The next building blocks in a sensible order, each with the context behind it
+so you do not have to re-derive *why* it is meant to work that way.
 
-Legende: ✅ fertig · 🔨 als Nächstes · 🔭 später
-
----
-
-## ✅ Fundament (diese Iteration)
-
-- Steam-Discovery (Multi-Library, ACF, Prefix + user_dir)
-- Snapshot-Diff-Speicherorterkennung
-- Prefix-DB (idempotent)
-- Neu-Spiel-Watcher (inotify + Poll-Fallback)
-- Self-Integration (Reloc + Shims + systemd, GearLever-aware)
-- Terminal-Welcome, AppImage-Build-Vorlage
+Legend: ✅ done · 🔨 next · 🔭 later
 
 ---
 
-## 🔨 Lutris-Adapter
+## ✅ Foundation
 
-**Warum zuerst:** Lutris ist technisch *einfacher* als alles andere, weil es
-echte Hooks in YAML hat — du musst keinen manuellen Nutzer-Schritt einbauen wie
-bei Steam.
+- Steam discovery (multi-library, ACF, prefix + user dir)
+- Snapshot-diff detection of storage locations
+- Prefix DB (idempotent, preserves user decisions)
+- New-game watcher (inotify + poll fallback)
+- Self-integration (relocate + shims + systemd, GearLever-aware)
+- Terminal welcome flow
 
-- Discovery: `~/.config/lutris/games/*.yml` lesen → `game.prefix` ist der echte
-  Prefix-Pfad (nicht raten!), plus Spielname.
-- Hook: `system.prelaunch_command` / `system.postexit_command` in die YAML
-  schreiben, die auf `deinapp-wrapper` zeigen.
-- `user_dir` ist bei Lutris meist `$USER` (nicht `steamuser`) — die vorhandene
-  `steam.user_dir_for`-Logik (auflisten statt raten) taugt als Vorlage.
-- Wrapper: `_steam_context()` verallgemeinern, damit auch ein Lutris-Kontext
-  (anderer ENV/Übergabeweg) aufgelöst wird.
+## ✅ Adapters, redirection, packaging (this iteration)
 
-**Dateien:** neu `adapters/lutris.py`; kleine Änderung in `core/wrapper.py`.
-
----
-
-## 🔭 Heroic-Adapter
-
-- Discovery: `~/.config/heroic/GamesConfig/<appName>.json` (JSON, nicht YAML!).
-  Felder: `prefixInstallPath` (Prefix-Anker), Spielname aus Store-Cache.
-- Hook: Heroic unterstützt Wrapper + pre-launch-Scripts → in die JSON schreiben.
-- Prefixe liegen standardmäßig unter `~/Games/Heroic/Prefixes/`, aber der echte
-  Pfad steht pro Spiel in der JSON.
-
-**Verifizieren:** Heroic ändert sein Config-Layout gelegentlich zwischen Major-
-Versionen — gegen eine echte Installation prüfen, nicht auf Annahmen verlassen.
-
-**Dateien:** neu `adapters/heroic.py`.
+- Lutris adapter (pga.db + YAML discovery, line-based hook injection)
+- Heroic adapter (GamesConfig JSON, `wrapperOptions`)
+- Source-agnostic wrapper with both hook shapes (wrap and pre/post)
+- Hybrid redirection (registry + symlink), self-healing via `reapply()`
+- Steam launch options written directly into `localconfig.vdf`
+- English source strings + German catalog, chosen by desktop locale
+- AppImage with bundled CPython, GitHub Actions release, self-update
 
 ---
 
-## 🔭 Optionale Hybrid-Umleitung
+## 🔨 Graphical interface (GTK4 / libadwaita)
 
-Das Konzept steht (siehe ARCHITECTURE.md, Abschnitt 3). Die DB ist mit
-`redirected`-Flag pro Speicherort schon vorbereitet.
+Sits on the existing logic — the split between logic and presentation in
+`gui/welcome.py` exists for exactly this.
 
-- `core/redirect.py`: `redirect_hybrid(pfx, user_dir, win_folder, target)`:
-  1. Registry-Key setzen (`Z:` + Zielpfad) in `user.reg`.
-  2. Symlink am physischen Ort als Fallback (vorhandene Daten erst rüberziehen).
-- **Wichtig:** Prefix-Prozesse müssen aus sein, sonst überschreibt Wine die
-  `user.reg`. Der Watcher kann First-Launch (`compatdata/*/pfx` erscheint) als
-  sicheren Moment nutzen.
-- Downloads-GUID (`{374DE290-…}`) gesondert behandeln — dort trägt oft nur der
-  Symlink.
-- Ein-Ordner-pro-Spiel-Prinzip: `~/AppData/<Spiel>/{Roaming,Local}` bzw.
-  `~/Games/<Spiel>/` — *besser* als Windows, weil zentral.
-- Umleitung im Wrapper *vor* dem Spielstart einklinken (idempotent, self-healing).
+- Game list ("Cyberpunk 2077 · saves: ~/Games/… · [Connect]").
+- **No** Wine/prefix vocabulary in the UI.
+- Welcome dialog: replace `choose_install_dir` with a folder chooser, reuse
+  `run` as the controller.
+- "Connect" button per game, calling the same `adapter.connect()` the CLI uses;
+  show `HookResult.manual` (Steam running) as a copy-paste card.
+- "Move saves home" switch per storage location → `core.redirect`.
+- PyGObject as a dependency; either bundle it in the AppImage or use system
+  GTK. Bundling GTK is the bigger part of this task — budget for it.
 
-**Sonderfall:** Schreibt ein Spiel in den Installationsordner
-(`steamapps/common/...`), ist das kein Shell-Folder → nur anzeigen, nicht
-umleiten (oder Symlink, mit Warnung).
+## 🔭 Install-experience layer
 
----
+Mostly falls out of the watcher and discovery that already exist:
 
-## 🔭 Grafische Oberfläche (GTK4 / libadwaita)
+- "Newly installed" greeting with a connect offer (uses the watcher).
+- First-launch preparation: create the prefix in a controlled way
+  (`wineboot`-style), set the redirection *before* the user really plays.
+- Optional: set the Proton version per game, suggest ProtonDB tweaks.
 
-Auf der bestehenden Logik — die Trennung Logik/Darstellung in `gui/welcome.py`
-ist genau dafür angelegt.
+**Honest limit:** Steam's own install dialog is untouchable, and writing VDF
+needs Steam closed.
 
-- Spieleliste („Cyberpunk 2077 · Speicherstände: ~/Games/… · [Verbinden]").
-- **Keine** Wine/Prefix-Begriffe in der UI (Windows-Gefühl!).
-- Welcome-Dialog: `choose_install_dir` durch einen Ordner-Dialog ersetzen, Rest
-  wiederverwenden.
-- „Verbinden"-Knopf für Steam: den Launch-Options-String setzen (bei
-  geschlossenem Steam direkt in `localconfig.vdf`, sonst in Zwischenablage +
-  Anleitung).
-- PyGObject als Dependency; im AppImage bündeln oder System-GTK nutzen.
+## 🔭 PCGamingWiki lookup
 
----
+Instant storage-location hits without playing first, and a much better
+`snapshot._guess_type`. Needs care: it is a network dependency, so it must stay
+optional and cached.
 
-## 🔭 Install-Erlebnis-Layer
+## 🔭 Watch for first launch
 
-Baut auf Watcher + Discovery auf (fällt größtenteils „geschenkt" an):
+The watcher can also react to `compatdata/<appid>/pfx` appearing, which is the
+safe moment to apply a redirection the user asked for while the game was never
+started.
 
-- „Neu installiert"-Begrüßung mit Verbinden-Angebot (nutzt den Watcher).
-- First-Launch-Vorbereitung: Prefix kontrolliert erzeugen (`wineboot`-artig),
-  Umleitung setzen, *bevor* der Nutzer zum ersten Mal „richtig" spielt.
-- Optional: Proton-Version pro Spiel setzen / ProtonDB-Tweaks vorschlagen.
+## 🔭 More sources
 
-**Grenze (ehrlich):** Steams eigenen Install-Dialog fasst man nicht an; VDF-
-Schreiben braucht *geschlossenes* Steam, sonst überschreibt Steam beim Beenden.
+- **Bottles**: show as "detected, not managed"; full management only on
+  request (the gaming overlap is small).
+- **Generic prefix scan**: treat anything with `user.reg` + `drive_c` as a
+  prefix (`base.is_prefix` already does this) for hand-rolled Wine setups.
 
----
+## 🔭 Backlog
 
-## 🔭 Weitere Ideen (Backlog)
-
-- **PCGamingWiki-Anbindung**: Speicherort-Sofort-Treffer ohne Spielen; verfeinert
-  `snapshot._guess_type`.
-- **Bottles-Adapter**: nur „erkannt, nicht verwaltet" anzeigen; volle Verwaltung
-  nur bei Nachfrage (Gaming-Schnittmenge klein).
-- **Generischer Prefix-Scan**: alles mit `user.reg` + `drive_c` als Prefix werten
-  (custom Wine).
-- **Steam-Cloud-Kollisionsschutz**: warnen, wenn umgeleitete Saves mit Cloud-Sync
-  kollidieren könnten.
-- **SQLite** statt JSON, wenn das Schema wächst (Signaturen in `db.py` beibehalten).
+- **Steam Cloud collision guard**: warn when redirected saves could clash with
+  cloud sync.
+- **SQLite** instead of JSON once the schema grows (keep the `db.py`
+  signatures).
+- **More languages**: one JSON file each; the machinery is done.
+- **aarch64 AppImage**: the build script already takes `ARCH`; add a matrix
+  entry to `release.yml` once there is hardware to test on.
