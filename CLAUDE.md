@@ -11,7 +11,7 @@ see the words prefix, Wine or `steamuser`.
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q            # 126 tests, ~1s, no real Steam needed
+.venv/bin/python -m pytest -q            # 205 tests, ~1s, no real Steam needed
 .venv/bin/ruff check src tests           # lint (config pinned in pyproject)
 PYTHONPATH=src python -m linux_prefix_hub --scan
 HOME=/tmp/x PYTHONPATH=src python -m linux_prefix_hub   # setup flow, safely
@@ -38,8 +38,8 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `__init__.py` | `__version__`, **derived** — generated `_version.py` (build) > install metadata > `0.0.0+dev`. The release tag is the only version there is |
 | `core/paths.py` | Every persistent path. Constants resolved at **import** time (tests reload it) |
 | `core/i18n.py` | `_()`; English source strings, `locales/de.json` catalog, `LPH_LANG` > config > `LANG` |
-| `core/db.py` | `prefixes.json`. `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS` |
-| `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); pending snapshots for the 2-process hook flow |
+| `core/db.py` | `prefixes.json`. `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS`; `prune_locations` drops what a filter should have caught, never a user's |
+| `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); the `IGNORE_*` filters (shader caches, logs, …) plus the user's own; pending snapshots for the 2-process hook flow |
 | `core/pcgw.py` | PCGamingWiki lookup: article → `{{Game data/…}}` → our locations. Optional, cached, **never on the launch path** (the wrapper reads the cache only) |
 | `core/desktop.py` | Hand a folder to the user's file manager. `xdg-open` first |
 | `core/wrapper.py` | The launch hook, both shapes (wrap and pre/post). Must never break a launch |
@@ -102,7 +102,10 @@ raising.
 
 ## State on disk
 
-`~/.config/linux-prefix-hub/{config.json,prefixes.json,known_games.json,snapshots/,pcgamingwiki/}`,
+`~/.config/linux-prefix-hub/{config.json,prefixes.json,known_games.json,snapshots/,pcgamingwiki/}`
+(`config.json` keys: `install_dir`, `redirect_root`, `language`,
+`online_lookup`, `game_folders`, `ignore_paths`, `setup_done`,
+`update_check`/`update_notified`),
 `~/.local/share/linux-prefix-hub/LinuxPrefixHub.AppImage`,
 `~/.local/bin/linux-prefix-hub-{wrapper,hook,daemon}`,
 `~/.config/systemd/user/linux-prefix-hub-watcher.service`.

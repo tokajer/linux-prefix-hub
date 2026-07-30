@@ -74,12 +74,21 @@ JSON in `~/.config/linux-prefix-hub/`, atomic writes (tmp + replace).
 `fingerprint`, `load_config`/`save_config`/`set_config`/`install_dir`,
 `extra_game_folders`/`add_game_folder`/`forget_game_folder` (the folders
 `adapters/generic.py` looks in beyond its defaults),
+`extra_ignore_paths`/`add_ignore_path`/`forget_ignore_path` (path fragments
+that are never a storage location — `core/snapshot.py` applies them),
 `load_prefixes`/`save_prefixes`, `upsert_prefix`, `get_prefix`, `find_prefix`,
 `resolve` (fingerprint | app id | partial name), `update_location`,
-`set_managed`.
+`prune_locations`, `set_managed`.
 
 `upsert_prefix` is the important one: it merges and preserves the user-owned
 flags listed in `USER_FIELDS` / `LOCATION_USER_FIELDS`.
+
+`prune_locations(fp | None, is_noise)` is the counterpart: it drops locations
+a filter we have *today* would never have recorded, so a shader cache stored
+last month does not stay a "config" location forever. The predicate comes from
+`core/snapshot.py` — the DB does not know what churn looks like, and snapshot
+does not know what the user decided. Locations with any `LOCATION_USER_FIELDS`
+set are never even offered to it.
 
 **Building on it:** if the schema outgrows JSON, SQLite is the next step — but
 keep these signatures and the rest of the code will not notice.
@@ -92,9 +101,15 @@ Two **spaces**, named by `WHERE_PREFIX` / `WHERE_GAME`; every location carries
 `where`.
 
 - `snapshot(prefix, user_dir) -> {rel_path: mtime}` over `INTERESTING_SUBTREES`
-  only, skipping `IGNORE_FRAGMENTS` (Temp, crash dumps, shader caches).
+  only, skipping `IGNORE_FRAGMENTS` (Temp, Windows scratch space, driver
+  caches) on top of the shared `IGNORE_ANY_*`.
 - `snapshot_game_dir(game_dir) -> {rel_path: mtime} | None` over the install
-  folder, skipping `IGNORE_GAME_*` (logs, dumps, `steam_appid.txt`).
+  folder, skipping `IGNORE_GAME_FRAGMENTS` (logs, downloads, crashes) on top
+  of the same shared lists.
+- `user_ignores()` — the fragments the user added (`db.extra_ignore_paths`),
+  read once per snapshot, never per file.
+- `location_is_noise(loc)` — the same question about a location already in the
+  DB; `db.prune_locations` acts on it.
 - `diff(before, after) -> [rel_path]`
 - `classify_locations(changed, where, known) -> [location]` — aggregates to
   directory level and guesses `type` (saves/config/unknown). `known` are
@@ -103,6 +118,14 @@ Two **spaces**, named by `WHERE_PREFIX` / `WHERE_GAME`; every location carries
 - `save_pending` / `load_pending` — hands the "before" state of *both* spaces
   from the pre hook to the post hook (Lutris runs them as two processes).
   Reads a flat pre-install-folder file as a prefix-only state.
+
+**The filters come in three shapes** — a folder fragment, a file name, a file
+suffix — matched case-insensitively against `"/" + rel_path`, which is why
+every fragment is written with a slash on both ends (`"/logs/"` must not match
+`mylogs/`). Most churn only inflates a file count, because
+`classify_locations` aggregates to three path segments anyway; the ones that
+matter are those whose first three segments are their own, like DXVK's
+`AppData/Local/dxvk`, which was reported as a "config" location of its own.
 
 **Why the install folder at all:** Source-engine games are the classic case.
 Portal 2 saves to `<install>/portal2/SAVE/<steamid>/` and touches nothing but
