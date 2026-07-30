@@ -307,7 +307,11 @@ Marked in the code at the relevant spots:
 5. **Hand-made game folders** — `DEFAULT_ROOTS` in `adapters/generic.py` is a
    "where do people keep these" list and cannot be complete. Check it against
    your own setup; anything missing is one `--add-game-folder` away.
-6. **The Velopack build** (`packaging/build-velopack.sh`) — the packaging up
+6. **Applying an update through the explicit locator** — `check()` is
+   verified from a system interpreter (it finds 0.2.3 from 0.2.2), but the
+   `download` → swap → restart path with that locator has never run. It is
+   what replaces the AppImage file, so watch the first one.
+7. **The Velopack build** (`packaging/build-velopack.sh`) — the packaging up
    to `vpk` is verified, `vpk` itself only in CI. `--mainExe` is answered:
    it must be an **ELF binary**, not a shell script (`vpk` reads the machine
    out of it), which is why there is a small compiled shim next to the

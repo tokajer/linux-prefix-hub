@@ -93,13 +93,76 @@ def app_hook() -> None:
         pass
 
 
-def _manager() -> Any | None:
-    """An UpdateManager for our release feed, or None if unusable."""
+def _source() -> Any:
+    from velopack import GithubSource
+    return GithubSource(repo_url(), None, False)
+
+
+def _explicit_locator() -> Any | None:
+    """Tell Velopack where the bundle is instead of letting it guess.
+
+    It resolves its `UpdateNix` helper against the **working directory**
+    ("UpdateNix does not exist at the expected path: usr/bin/UpdateNix"),
+    which holds for as long as the bundled interpreter is the one running.
+    The window is not: `__main__._reexec_gui` hands over to a *system*
+    Python, and from there auto-locate lands outside the bundle and the
+    UpdateManager cannot be built at all. Symptom: the terminal says "update
+    available" and the window, same build, same minute, says "you are up to
+    date".
+
+    Returns None unless every piece is where we expect it. Guessing wrong
+    here is worse than offering no update: these paths are what `update()`
+    later overwrites.
+    """
+    import os
+    from pathlib import Path
+
+    appimage = os.environ.get("APPIMAGE")
+    appdir = os.environ.get("APPDIR")
+    if not appimage or not appdir:
+        return None
+    binary_dir = Path(appdir) / "usr" / "bin"
+    update_exe = binary_dir / "UpdateNix"
+    manifest = binary_dir / "sq.version"
+    if not update_exe.exists() or not manifest.exists():
+        return None
     try:
-        from velopack import GithubSource, UpdateManager
-        return UpdateManager(GithubSource(repo_url(), None, False))
+        from velopack import VelopackLocatorConfig
+        return VelopackLocatorConfig(
+            RootAppDir=appimage,          # on Linux: the AppImage file
+            UpdateExePath=str(update_exe),
+            PackagesDir=str(db.install_dir() / "packages"),
+            ManifestPath=str(manifest),
+            CurrentBinaryDir=str(binary_dir),
+            IsPortable=True,
+        )
     except Exception:
-        # Not installed, not a packaged build, or no feed configured.
+        return None
+
+
+def _build_manager(source: Any, locator: Any | None = None) -> Any:
+    """The one place that touches Velopack's constructor."""
+    from velopack import UpdateManager
+    return UpdateManager(source, None, locator)
+
+
+def _manager() -> Any | None:
+    """An UpdateManager for our release feed, or None if unusable.
+
+    Velopack's own auto-locate first -- it is the tested path and works
+    wherever the bundled interpreter runs. The explicit locator is the
+    rescue for the window; see `_explicit_locator` for what it rescues from.
+    """
+    try:
+        return _build_manager(_source())
+    except Exception:
+        pass                    # not packaged, no feed, or auto-locate lost
+    locator = _explicit_locator()
+    if locator is None:
+        return None
+    try:
+        return _build_manager(_source(), locator)
+    except Exception:
         return None
 
 

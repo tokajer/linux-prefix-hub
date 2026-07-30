@@ -266,7 +266,7 @@ install-folder case fights with launcher updaters.
 ## `core/updater.py` — self-update via Velopack
 
 `app_hook()`, `check(force)` (cached for a day in config.json), `update()`,
-`available()`, `is_newer`, `parse_version`.
+`available()`, `repo_url()`, `is_newer`, `parse_version`.
 
 Velopack owns the mechanics: `check_for_updates` → `download_updates` →
 `apply_updates_and_restart`, against the GitHub release feed that
@@ -279,6 +279,20 @@ Velopack owns the mechanics: `check_for_updates` → `download_updates` →
    straight to stderr that no Python `except` can swallow. It is called from
    `__main__.main` *after* the `--wrapper`/`--hook`/`--daemon` fast paths, so a
    game launch never pays for importing a compiled SDK.
+
+3. **We tell Velopack where the bundle is when it cannot work it out.**
+   It resolves its `UpdateNix` helper against the *working directory*,
+   which holds until the window hands over to a system interpreter
+   (`__main__._reexec_gui`) — from there auto-locate lands outside the
+   bundle and no UpdateManager can be built at all. `_explicit_locator()`
+   fills in `$APPDIR/usr/bin/{UpdateNix,sq.version}` and returns None
+   unless both exist: `update()` overwrites exactly these paths, so a
+   wrong guess is worse than no update. Auto-locate stays the default.
+
+`check()` returns a `reason` — `""` (asked, current), `"unavailable"` (no
+updater in this build), `"unreachable"` (feed silent). Only an empty one
+may be shown as "you are up to date"; conflating them is how a window
+claimed to be current while the terminal offered the update.
 
 Everything degrades to an honest message when the `velopack` wheel is absent
 (pip installs, and the local `build-appimage.sh` test build).

@@ -296,3 +296,86 @@ def test_app_hook_swallows_sdk_errors(monkeypatch):
     monkeypatch.setattr(updater.integrate, "running_as_appimage",
                         lambda: "/x/App.AppImage")
     updater.app_hook()
+
+
+# --- locating the bundle -------------------------------------------------
+def _fake_velopack(monkeypatch, *, auto_locate_works: bool):
+    """A velopack module whose auto-locate fails the way the real one does
+    once the window has handed over to a system interpreter."""
+    import sys
+    import types
+
+    module = types.ModuleType("velopack")
+    seen: dict[str, object] = {}
+
+    class GithubSource:
+        def __init__(self, url, *a):
+            seen["url"] = url
+
+    class VelopackLocatorConfig:
+        def __init__(self, **fields):
+            seen["locator"] = fields
+
+    class UpdateManager:
+        def __init__(self, source, options=None, locator=None):
+            if locator is None and not auto_locate_works:
+                raise RuntimeError(
+                    "This application is not properly installed: UpdateNix "
+                    "does not exist at the expected path: usr/bin/UpdateNix")
+            seen["built_with_locator"] = locator is not None
+
+    module.GithubSource = GithubSource
+    module.UpdateManager = UpdateManager
+    module.VelopackLocatorConfig = VelopackLocatorConfig
+    monkeypatch.setitem(sys.modules, "velopack", module)
+    return seen
+
+
+def _fake_bundle(monkeypatch, tmp_path):
+    """The two files `_explicit_locator` refuses to work without."""
+    binary_dir = tmp_path / "mount" / "usr" / "bin"
+    binary_dir.mkdir(parents=True)
+    (binary_dir / "UpdateNix").write_text("#!/bin/true\n")
+    (binary_dir / "sq.version").write_text("0.2.2\n")
+    monkeypatch.setenv("APPDIR", str(tmp_path / "mount"))
+    monkeypatch.setenv("APPIMAGE", str(tmp_path / "App.AppImage"))
+    return binary_dir
+
+
+def test_the_window_still_gets_a_manager(monkeypatch, tmp_path):
+    """The bug: from a system interpreter Velopack cannot find its own
+    UpdateNix (it resolves that against the working directory), so the
+    window reported "up to date" while the terminal offered the update."""
+    from linux_prefix_hub.core import updater
+    seen = _fake_velopack(monkeypatch, auto_locate_works=False)
+    binary_dir = _fake_bundle(monkeypatch, tmp_path)
+
+    assert updater._manager() is not None
+    assert seen["built_with_locator"] is True
+    assert seen["locator"]["UpdateExePath"] == str(binary_dir / "UpdateNix")
+    assert seen["locator"]["RootAppDir"] == str(tmp_path / "App.AppImage")
+
+
+def test_velopacks_own_locate_is_left_alone_when_it_works(monkeypatch,
+                                                          tmp_path):
+    """It is the tested path; ours is only the rescue."""
+    from linux_prefix_hub.core import updater
+    seen = _fake_velopack(monkeypatch, auto_locate_works=True)
+    _fake_bundle(monkeypatch, tmp_path)
+
+    assert updater._manager() is not None
+    assert seen["built_with_locator"] is False
+
+
+def test_no_locator_is_invented_outside_the_bundle(monkeypatch, tmp_path):
+    """Wrong paths here are what `update()` would overwrite."""
+    from linux_prefix_hub.core import updater
+    _fake_velopack(monkeypatch, auto_locate_works=False)
+    monkeypatch.delenv("APPDIR", raising=False)
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    assert updater._manager() is None
+
+    # ...and not even inside one when the pieces are missing.
+    monkeypatch.setenv("APPDIR", str(tmp_path / "empty"))
+    monkeypatch.setenv("APPIMAGE", str(tmp_path / "App.AppImage"))
+    assert updater._manager() is None
