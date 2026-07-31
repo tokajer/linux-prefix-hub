@@ -190,6 +190,21 @@ Locations outside a standard Windows folder (a game writing into its own
 install directory) are reported but not moved: there is no safe way to do it,
 and pretending otherwise would risk your data. `--open` still takes you there.
 
+### A game you have not played yet
+
+You can ask before there is anything to move. A game that was never started
+has no folder yet, so the request is remembered and carried out for you after
+the first session — in the window it is the switch on a game that says *not
+started yet*, and on the command line it is the same `--redirect`:
+
+```bash
+linux-prefix-hub --redirect "Elden Ring"     # never started? remembered
+linux-prefix-hub --undo-redirect "Elden Ring"   # changed your mind
+```
+
+The background service does the work, so leave it running (it is set up for
+you). Your game is never touched while it is open.
+
 ## Language
 
 German desktop → German UI. Anything else → English. Override it:
@@ -216,6 +231,18 @@ one file is worse than a slightly stale app.
 
 Only the AppImage can update itself. A `pip`/`pipx` install belongs to pip, and
 the local test build (`packaging/build-appimage.sh`) ships no updater at all.
+
+## In the background
+
+Closing the window does not quit the app: it keeps a small icon in the system
+tray, so it stays one click away and can tell you about new games, waiting
+updates and moves it still has to make. Left-click the icon for the window,
+right-click it for the menu.
+
+If your desktop has no tray at all — plain GNOME, for instance, unless the
+*AppIndicator* extension is installed — nothing changes: closing the window
+quits, exactly as before. To get that back on a desktop that *does* have one,
+turn off **Keep running in the background** in **Settings**.
 
 ## All modes
 
@@ -276,6 +303,15 @@ Steam libraries, Heroic (Flatpak) and GearLever (Flatpak):
   title and search resolution, plus a name that has no article. Portal 2's
   install-folder saves, Cyberpunk's `Saved Games`, Skyrim's `My Games` and
   Hollow Knight's `LocalLow` all map to the paths the diff would produce.
+- ✅ **The tray against KDE's own `StatusNotifierWatcher`** — the item
+  registers, every `StatusNotifierItem` property and the whole dbusmenu
+  layout read back correctly over `busctl`, closing the window hides it while
+  the app keeps running, the tray brings it back, an update relabels the menu
+  entry and turns the icon to `NeedsAttention`, and the app exits cleanly.
+  With **Keep running in the background** off, closing quits — the old
+  behaviour, unchanged.
+- ✅ **The list grouped per launcher** — Steam, Lutris, Heroic and a
+  hand-made folder each get their own heading, in the window and in `--scan`.
 
 Five bugs that only real use exposed, now fixed and covered by regression
 tests: a duplicate appid listed twice (same manifest in two libraries), Proton
@@ -311,7 +347,18 @@ Marked in the code at the relevant spots:
    verified from a system interpreter (it finds 0.2.3 from 0.2.2), but the
    `download` → swap → restart path with that locator has never run. It is
    what replaces the AppImage file, so watch the first one.
-7. **The Velopack build** (`packaging/build-velopack.sh`) — the packaging up
+7. **The tray on a desktop that is not KDE** — GNOME needs the *AppIndicator*
+   extension, and its host is a different implementation of the same two
+   interfaces. Check that the icon appears, that a left click raises the
+   window and that a right click opens the menu. The icon itself is resolved
+   through the icon theme by name, so it needs `--integrate` to have run —
+   otherwise the item registers but draws blank.
+8. **A real first launch** — the `compatdata` watch and a move that was asked
+   for before the game existed have only been exercised against a synthetic
+   library. Ask for one on a game you have never started, play it once, and
+   check that the data lands in your home folder afterwards (within a minute
+   of quitting, not while you are playing).
+9. **The Velopack build** (`packaging/build-velopack.sh`) — the packaging up
    to `vpk` is verified, `vpk` itself only in CI. `--mainExe` is answered:
    it must be an **ELF binary**, not a shell script (`vpk` reads the machine
    out of it), which is why there is a small compiled shim next to the

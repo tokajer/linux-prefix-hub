@@ -452,3 +452,55 @@ def test_gearlever_configured_folder_wins(isolated_home, monkeypatch):
 
     monkeypatch.setenv("APPIMAGE", str(isolated_home / "elsewhere/x.AppImage"))
     assert integrate.detect_gearlever() is None
+
+
+# --- Config the window owns ----------------------------------------------
+def test_background_running_is_on_until_it_is_turned_off():
+    """Default on: the window is not the app -- see `db.background_tray`."""
+    from linux_prefix_hub.core import db
+    assert db.background_tray() is True
+
+    db.set_config("background_tray", False)
+    assert db.background_tray() is False
+
+    db.set_config("background_tray", True)
+    assert db.background_tray() is True
+
+
+def test_pending_redirects_survive_a_corrupt_value():
+    from linux_prefix_hub.core import db
+    db.set_config("pending_redirects", "not a dict")
+    assert db.pending_redirects() == {}
+
+
+def test_a_second_wish_for_one_game_replaces_the_first():
+    from linux_prefix_hub.core import db
+    db.add_pending_redirect("steam", "2310", "Quake", ["Documents"])
+    db.add_pending_redirect("steam", "2310", "Quake", ["AppData/Roaming"])
+
+    pending = db.pending_redirects()
+    assert list(pending) == ["steam:2310"]
+    assert pending["steam:2310"]["roots"] == ["AppData/Roaming"]
+
+
+# --- The tray, where there is none ---------------------------------------
+def test_the_tray_degrades_to_nothing_without_a_desktop(monkeypatch):
+    """Importable and inert with no `gi` to export anything through.
+
+    The one thing that must never happen is a window closing into a tray
+    that is not there, so `live` is the fact the caller asks for -- and it is
+    False here rather than an exception the caller has to catch. Forced
+    rather than inferred from this interpreter: the suite must not reach a
+    real session bus on a machine that happens to have one.
+    """
+    from linux_prefix_hub.gui import tray
+    monkeypatch.setattr(tray, "_gio", lambda: None)
+
+    icon = tray.Tray(title="Test", icon="test", items=[
+        tray.Item("quit", "Quit", lambda: None)])
+
+    assert icon.live is False
+    icon.set_label("quit", "Beenden")      # all of it stays safe to call
+    icon.set_attention(True)
+    icon.close()
+    icon.close()

@@ -26,7 +26,7 @@ Adapter module contract -- every adapter provides:
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +91,27 @@ def source_label(source: str) -> str:
         return _("hand-installed")
     return {"steam": "Steam", "lutris": "Lutris",
             "heroic": "Heroic"}.get(source, source)
+
+
+def group_by_source(games: Iterable[Game]) -> list[tuple[str, list[Game]]]:
+    """Games bucketed per source, in `SOURCES` order, each bucket by name.
+
+    Sorting the whole library by name mixes four launchers into one wall of
+    rows; the source is the first thing a person looks for ("where did I
+    install that again?"), so it is the first thing the list is cut by.
+
+    The order is the adapters' own, so nobody has to keep two orders in step.
+    A source we do not know goes last rather than getting dropped -- an empty
+    list is a worse answer than an unexpected heading.
+    """
+    buckets: dict[str, list[Game]] = {}
+    for game in games:
+        buckets.setdefault(str(game.get("source", "")), []).append(game)
+    order = [s for s in SOURCES if s in buckets]
+    order += sorted(s for s in buckets if s not in SOURCES)
+    return [(source, sorted(buckets[source],
+                            key=lambda g: str(g.get("game_name", "")).lower()))
+            for source in order]
 
 
 def iter_games(sources: tuple[str, ...] | None = None) -> Iterator[Game]:

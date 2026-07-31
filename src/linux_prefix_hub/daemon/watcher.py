@@ -11,9 +11,12 @@ change rarely enough that a minute of latency is fine.
 On the very first run every installed game is marked as known instead of
 reported, so the user does not get their whole library as "new".
 
-Later this same watcher can also react to `compatdata/<appid>/pfx` appearing
-(= started for the first time), which is the safe moment to apply a pending
-redirection.
+The same loop carries out moves the user asked for before a game had anything
+to move (`core/redirect.apply_pending`). A `compatdata/<appid>` directory
+appearing is watched for the same reason a new manifest is -- it is the moment
+a game first creates its folder -- but it is emphatically *not* the moment to
+write into it: the game is booting. So every pass retries, and the move lands
+on the first pass that finds the folder idle.
 
 VERIFY-ON-DEVICE:
   - Needs the PyPI package `inotify_simple` for instant Steam detection. This
@@ -25,6 +28,7 @@ VERIFY-ON-DEVICE:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import time
@@ -66,10 +70,10 @@ def _notify(title: str, body: str) -> None:
         print(f"[notify] {title}: {body}")
 
 
-def _scan_once(known: set[str]) -> set[str]:
+def _scan_once(games: list[dict], known: set[str]) -> set[str]:
     """One scan pass: report games that finished installing."""
     newly = set()
-    for game in base.iter_games():
+    for game in games:
         if not game.get("installed"):
             continue
         key = _key(game)
@@ -109,11 +113,43 @@ def _maybe_notify_update() -> None:
         pass  # never let the updater take the watcher down
 
 
+def _apply_pending(games: list[dict]) -> None:
+    """Carry out moves that were waiting for a game to exist.
+
+    Nothing here is an error worth stopping for: a game still running, a
+    folder we cannot write to and a game that has told us nothing yet all
+    mean the same thing -- try again next pass. `redirect.apply_pending`
+    keeps the wish until it is done in full.
+    """
+    try:
+        from ..core import db, redirect
+        wishes = db.pending_redirects()
+        if not wishes:
+            return
+        for game in games:
+            key = db.pending_key(str(game.get("source", "")),
+                                 str(game.get("app_id", "")))
+            if key not in wishes:
+                continue
+            moved = redirect.apply_pending(game)
+            if moved:
+                _notify(_("Game data moved"),
+                        _("{game}: {folders} now live in your home folder.",
+                          game=game.get("game_name", key),
+                          folders=", ".join(moved)))
+    except Exception:
+        pass  # never let a pending move take the watcher down
+
+
 def _refresh(known: set[str]) -> set[str]:
-    newly = _scan_once(known)
+    # One discovery pass feeds everything below it. Asking the adapters twice
+    # per cycle is a real cost: it stats every library and every prefix.
+    games = list(base.iter_games())
+    newly = _scan_once(games, known)
     if newly:
         known |= newly
         _save_known(known)
+    _apply_pending(games)
     _maybe_notify_update()
     return known
 
@@ -140,11 +176,21 @@ def run() -> None:
     inotify = INotify()
     watch_flags = flags.CLOSE_WRITE | flags.MOVED_TO | flags.CREATE
     watched: dict[int, Path] = {}
+    compat_wds: set[int] = set()
     for steamapps in steam.find_library_dirs():
         try:
             watched[inotify.add_watch(str(steamapps), watch_flags)] = steamapps
         except OSError:
             continue
+        # `compatdata/<appid>` appearing = a game creating its folder for the
+        # first time. Only the parent is watched: `pfx` shows up inside it a
+        # moment later, and waiting for that would buy nothing -- the game
+        # holds the folder open either way, so the work happens on a later
+        # pass (see `_apply_pending`). Missing this watch costs a minute, not
+        # correctness, so a library without compatdata is not an error.
+        with contextlib.suppress(OSError):
+            compat_wds.add(inotify.add_watch(str(steamapps / "compatdata"),
+                                             flags.CREATE | flags.MOVED_TO))
 
     print(f"[watcher] inotify active on {len(watched)} Steam librar"
           f"{'y' if len(watched) == 1 else 'ies'}; "
@@ -154,7 +200,8 @@ def run() -> None:
         # A timeout turns the same loop into the poll cycle for Lutris/Heroic.
         events = inotify.read(timeout=int(POLL_INTERVAL * 1000))
         relevant = any(
-            (e.name or "").startswith("appmanifest_")
-            and (e.name or "").endswith(".acf") for e in events)
+            e.wd in compat_wds
+            or ((e.name or "").startswith("appmanifest_")
+                and (e.name or "").endswith(".acf")) for e in events)
         if relevant or not events:
             known = _refresh(known)

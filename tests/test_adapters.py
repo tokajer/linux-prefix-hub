@@ -503,3 +503,41 @@ def test_heroic_installed_is_or_ed_across_caches(isolated_home, monkeypatch,
     }))
 
     assert next(iter(heroic.iter_games()))["installed"] is True
+
+
+# --- Grouping the library by launcher ------------------------------------
+def _game(name, source):
+    return {"game_name": name, "source": source, "app_id": name.lower()}
+
+
+def test_games_are_grouped_in_the_adapters_own_order():
+    from linux_prefix_hub.adapters import base
+    groups = base.group_by_source([
+        _game("Zenkcraft", "generic"),
+        _game("Quake", "lutris"),
+        _game("Portal 2", "steam"),
+        _game("Anno", "steam"),
+    ])
+    assert [source for source, _games in groups] == [
+        "steam", "lutris", "generic"]
+    # Alphabetical inside a group, so a long library stays scannable.
+    assert [g["game_name"] for g in groups[0][1]] == ["Anno", "Portal 2"]
+
+
+def test_an_empty_source_gets_no_heading():
+    from linux_prefix_hub.adapters import base
+    groups = base.group_by_source([_game("Quake", "lutris")])
+    assert [source for source, _games in groups] == ["lutris"]
+
+
+def test_an_unknown_source_is_kept_rather_than_dropped():
+    """A heading nobody expected beats a game that silently vanished."""
+    from linux_prefix_hub.adapters import base
+    groups = base.group_by_source([_game("Quake", "bottles"),
+                                   _game("Portal 2", "steam")])
+    assert [source for source, _games in groups] == ["steam", "bottles"]
+
+
+def test_grouping_an_empty_library_is_an_empty_list():
+    from linux_prefix_hub.adapters import base
+    assert base.group_by_source([]) == []

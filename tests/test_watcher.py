@@ -141,3 +141,71 @@ def test_notify_without_notify_send_falls_back_to_stdout(monkeypatch, capsys):
     mod._notify("Title", "Body")
 
     assert "Title" in capsys.readouterr().out
+
+
+# --- Moves that were waiting for a game to exist -------------------------
+@pytest.fixture
+def wishful(monkeypatch):
+    """The watcher with `_maybe_notify_update` off and notifications caught."""
+    from linux_prefix_hub.daemon import watcher as mod
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(mod, "_notify", lambda t, b: sent.append((t, b)))
+    monkeypatch.setattr(mod, "_maybe_notify_update", lambda: None)
+    mod.sent = sent            # type: ignore[attr-defined]
+    return mod
+
+
+def test_a_pending_move_is_carried_out_by_the_watcher(wishful, monkeypatch):
+    from linux_prefix_hub.core import db, redirect
+
+    game = {"game_name": "Quake", "source": "steam", "app_id": "2310",
+            "installed": True}
+    db.add_pending_redirect("steam", "2310", "Quake")
+    monkeypatch.setattr(wishful.base, "iter_games", lambda: [game])
+    monkeypatch.setattr(redirect, "apply_pending", lambda g: ["Documents"])
+
+    wishful._refresh({"steam:2310"})
+
+    assert any("Documents" in body for _title, body in wishful.sent)
+
+
+def test_games_nobody_asked_about_are_left_alone(wishful, monkeypatch):
+    from linux_prefix_hub.core import redirect
+
+    asked: list[str] = []
+    monkeypatch.setattr(redirect, "apply_pending",
+                        lambda g: asked.append(g["app_id"]) or [])
+    monkeypatch.setattr(wishful.base, "iter_games", lambda: _games(
+        ("Portal 2", "steam", "620", True)))
+
+    wishful._refresh({"steam:620"})
+
+    assert asked == []
+
+
+def test_a_move_that_is_not_ready_yet_says_nothing(wishful, monkeypatch):
+    """Empty means "next pass", and a retry is not news the user wants."""
+    from linux_prefix_hub.core import db, redirect
+
+    db.add_pending_redirect("steam", "2310", "Quake")
+    monkeypatch.setattr(wishful.base, "iter_games", lambda: _games(
+        ("Quake", "steam", "2310", True)))
+    monkeypatch.setattr(redirect, "apply_pending", lambda g: [])
+
+    wishful._refresh({"steam:2310"})
+
+    assert wishful.sent == []
+
+
+def test_a_failing_move_never_takes_the_watcher_down(wishful, monkeypatch):
+    from linux_prefix_hub.core import db, redirect
+
+    def boom(_game):
+        raise OSError("read-only file system")
+
+    db.add_pending_redirect("steam", "2310", "Quake")
+    monkeypatch.setattr(wishful.base, "iter_games", lambda: _games(
+        ("Quake", "steam", "2310", True)))
+    monkeypatch.setattr(redirect, "apply_pending", boom)
+
+    assert wishful._refresh({"steam:2310"}) == {"steam:2310"}

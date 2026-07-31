@@ -81,6 +81,10 @@ JSON in `~/.config/linux-prefix-hub/`, atomic writes (tmp + replace).
 `adapters/generic.py` looks in beyond its defaults),
 `extra_ignore_paths`/`add_ignore_path`/`forget_ignore_path` (path fragments
 that are never a storage location — `core/snapshot.py` applies them),
+`background_tray` (whether closing the window ends the app — default on),
+`pending_key`/`pending_redirects`/`add_pending_redirect`/
+`drop_pending_redirect` (moves asked for before the game had a folder;
+`core/redirect.py` owns what they mean),
 `load_prefixes`/`save_prefixes`, `upsert_prefix`, `get_prefix`, `find_prefix`,
 `resolve` (fingerprint | app id | partial name), `update_location`,
 `prune_locations`, `set_managed`.
@@ -244,8 +248,10 @@ last process in the prefix exits — always check `prefix_in_use` first.
 
 ## `core/redirect.py` — hybrid redirection
 
-`default_target`, `physical_path`, `location_path`, `redirect(fp, win_path,
-target, force)`, `undo(fp, win_path)`, `reapply(fp)`.
+`default_target`, `physical_path`, `location_path`, `movable_roots(entry)`,
+`redirect(fp, win_path, target, force)`, `undo(fp, win_path)`, `reapply(fp)`,
+`request(game, roots, target)`, `cancel_request`, `is_requested`,
+`apply_pending(game)`.
 
 Sequence: move data (never overwriting) → replace the physical folder with a
 symlink → write the registry → set the DB flags. `reapply` is the self-heal
@@ -261,6 +267,31 @@ the new root.
 location in either space — the redirect target if moved, the install folder for
 game-folder locations, the path inside the prefix otherwise. That is what the
 open-in-file-manager action needs.
+
+### Asked for before the game ever ran
+
+`request()` stores a wish, `apply_pending()` carries it out. Everything above
+needs a prefix — a registry to point elsewhere, a directory to replace with a
+link — and a prefix only exists after the first launch, while *before* it is
+when people decide where a game's data should go (right after a lookup told
+them what it will write).
+
+The wish cannot live in `prefixes.json`: that is keyed by the prefix, and its
+absence is the whole situation. So it goes into `pending_redirects` in
+config.json under `<source>:<app_id>`, the only identity a game has this early.
+
+`apply_pending` has three honest reasons to do nothing and come back later,
+and the watcher simply retries every pass: the game still has no prefix; the
+prefix exists but is *in use* (which is the normal state right after it
+appears — the game is booting); or nothing movable is known about the game
+yet. It returns the roots it moved, and only drops the wish when every one of
+them landed. It also files the game in the DB on the way through, folding in
+whatever `pcgw` has been holding in its cache for want of a prefix to key by.
+
+`movable_roots(entry)` is the shared answer to "which shell folders of this
+game can redirection actually express" — used by `apply_pending` and by
+`--redirect`, and it skips install-folder locations rather than reporting them
+as failures.
 
 **Building on it:** locations outside a shell folder are refused on purpose.
 If you ever want to support them, it can only be the symlink half, and the
@@ -368,8 +399,12 @@ is what the user reads), and `HookResult` (ok / manual / message / detail).
 of the list instead of taking the scan down.
 
 The order of `SOURCES` is not cosmetic: `context_from_env` asks in that order,
-and `generic` — which claims *any* game folder — must come last, after every
-adapter that can name a game properly.
+`generic` — which claims *any* game folder — must come last, after every
+adapter that can name a game properly, and `group_by_source(games)` reuses it
+as the reading order so the window and `--scan` cannot drift apart. That
+helper buckets a library per source (each bucket sorted by name) and keeps a
+source it does not recognise, at the end: an unexpected heading beats a game
+that silently disappeared.
 
 ---
 
@@ -458,14 +493,28 @@ more clearly than any folder list could.
 
 ## `daemon/watcher.py` — the background service
 
-`run()` (inotify on all steamapps + periodic rescan of the other sources),
-`run_poll(interval)` (fallback), `_notify`, `_maybe_notify_update`.
+`run()` (inotify on all steamapps *and* their `compatdata` + periodic rescan of
+the other sources), `run_poll(interval)` (fallback), `_notify`,
+`_maybe_notify_update`, `_apply_pending`.
 
 On the very first run every installed game is marked known instead of reported,
 so the user does not get their whole library as "new".
 
-**Building on it:** watching for `compatdata/*/pfx` appearing (= first launch)
-would give a safe moment to apply a pending redirection.
+A `compatdata/<appid>` directory appearing means a game is creating its folder
+for the first time. Only the parent is watched — `pfx` shows up inside it
+moments later and waiting for that buys nothing, because the game holds the
+folder open either way. That is also why the watch is a latency improvement
+and not a correctness requirement: `_apply_pending` runs on *every* pass and
+`redirect.apply_pending` keeps a wish until it has been carried out in full
+(see `core/redirect.py`). Missing the watch costs a minute.
+
+`_refresh` does one `base.iter_games()` per cycle and feeds both the new-game
+scan and the pending moves from it — asking the adapters twice would stat
+every library and every prefix again.
+
+**Building on it:** the same hook is where "newly installed" greetings and
+first-launch preparation would go (see the roadmap's install-experience
+layer).
 
 ---
 
@@ -504,8 +553,14 @@ presentation differs.
 ## `gui/app.py` — the window (GTK 4 / libadwaita)
 
 `main()`, `LphApplication`, `MainWindow`, `GameRow`, `GameFolderRow`,
-`LocationRow`, `FixedLocationRow`, `SettingsDialog`, `path_button()`,
-`open_button()`, `esc()`.
+`LocationRow`, `FixedLocationRow`, `PendingRow`, `SettingsDialog`,
+`path_button()`, `open_button()`, `esc()`.
+
+The list is cut by launcher: `MainWindow._show` draws one
+`Adw.PreferencesGroup` per bucket of `base.group_by_source()`, titled with
+`base.source_label()`. Because the heading names the source, `GameRow`'s
+subtitle no longer repeats it ("ready", not "Steam - ready"). The general
+instruction sits once above all the groups instead of once per heading.
 
 `GameFolderRow` is the first row of every game that has been started once: the
 folder the game itself lives in, with the path selectable (libadwaita 1.3+,
@@ -524,7 +579,12 @@ the install folder, or a prefix path outside any shell folder. Both carry an
 this game save?" is the question the app exists to answer, and the answer is
 useful even when we cannot act on it.
 
-`SettingsDialog` edits `redirect_root` and `online_lookup`.
+`PendingRow` is the switch a game gets *instead of* a game-folder row when it
+has never been started: the same decision as `LocationRow`, in the same place,
+worded the same way — only the moment it can be acted on differs. It writes a
+wish through `redirect.request()` and the watcher carries it out.
+
+`SettingsDialog` edits `redirect_root`, `online_lookup` and `background_tray`.
 `Adw.PreferencesDialog` (libadwaita 1.5+) and `Gtk.FileDialog` (GTK 4.10+) are
 both feature-detected — the window runs on whatever the *host* has, not on what
 the AppImage bundles. That is also why the online switch is an `ActionRow` with
@@ -545,6 +605,49 @@ Two rules that are easy to break:
 Switch handlers use `state-set` and return `True`, driving the visual state
 themselves once the work finishes; `_syncing` guards against the feedback loop
 when we set the state programmatically.
+
+`LphApplication._start_tray` is what lets the window close into the tray: it
+builds a `gui.tray.Tray`, and **only if `tray.live`** does it `hold()` the
+application and connect `close-request`. Without `hold()` GTK ends the app with
+its last window; without the `live` check the app would vanish with no way
+back. `_on_close` asks `live` again every time, because a desktop shell
+restart takes the tray host away mid-session.
+
+---
+
+## `gui/tray.py` — the tray icon
+
+`Tray(title, icon, items, on_activate)`, `Item(key, label, action)`,
+`Tray.live`, `set_label(key, label)`, `set_attention(on)`, `close()`.
+
+**Contains no GTK, deliberately.** GTK4 removed `Gtk.StatusIcon` and the usual
+replacement — AppIndicator, Ayatana's fork or Canonical's original — links
+against GTK3, so importing its typelib inside a GTK4 process aborts with
+"Using GTK 2/3 and GTK 4 in the same process is not supported". It is not a
+dependency we declined; it is one that cannot be taken. Underneath those
+libraries every tray speaks `org.kde.StatusNotifierItem` and
+`com.canonical.dbusmenu`, and Gio exports both without caring about GTK.
+
+`gi` itself is imported lazily (`_gio()`), so the module imports in a plain
+test interpreter and every entry point degrades instead of raising.
+
+Three things that are easy to get wrong:
+
+- **`live` must be answerable synchronously.** The caller decides whether to
+  connect its close handler before the main loop has run, so the initial
+  answer comes from a blocking `NameHasOwner` call (`_watcher_present`); the
+  asynchronous `bus_watch_name` only keeps it current. Getting this from the
+  watch alone made `live` False for every caller that ever asked, and the
+  tray silently did nothing at all.
+- **Registration needs the host *and* the name.** They arrive in either order,
+  so `_on_name_acquired` and the watch's `appeared` both call
+  `_register_with_host`, which no-ops until both are true.
+- **Menu actions land on the main loop** via `GLib.idle_add`, never straight
+  out of the D-Bus callback — an action opens dialogs and touches widgets.
+
+Menu ids start at 1 because dbusmenu reserves 0 for the root. `set_label`
+bumps the revision and emits `LayoutUpdated`; `set_attention` flips `Status`
+between `Active` and `NeedsAttention` and emits `NewStatus`.
 
 ---
 

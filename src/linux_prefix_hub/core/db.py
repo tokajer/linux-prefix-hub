@@ -164,6 +164,61 @@ def forget_ignore_path(fragment: str) -> bool:
     return True
 
 
+def background_tray() -> bool:
+    """Should the app stay alive in the tray when its window is closed?
+
+    Default on: the window is not the app. An update check, a new-game
+    notification and a move waiting for a game's first launch all outlive it,
+    and an icon is the only thing that says so. Off puts the old behaviour
+    back, where closing the window ends the process.
+    """
+    value = load_config().get("background_tray")
+    return True if value is None else bool(value)
+
+
+# --- Redirections asked for before there was anything to redirect --------
+# These cannot live in the prefix DB: that is keyed by the prefix, and the
+# whole point of a pending wish is that no prefix exists yet. So the key is
+# "<source>:<app_id>" -- the only identity a game has before it has a folder.
+def pending_key(source: str, app_id: str) -> str:
+    return f"{source}:{app_id}"
+
+
+def pending_redirects() -> dict[str, Any]:
+    """Every stored wish, keyed by `pending_key`."""
+    value = load_config().get("pending_redirects")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def add_pending_redirect(source: str, app_id: str, game_name: str = "",
+                         roots: list[str] | None = None,
+                         target: str | None = None) -> str:
+    """Remember that this game's data should be moved once it can be.
+
+    `roots` empty means "whatever turns out to be movable" -- before the first
+    launch we usually do not know yet, and guessing here would be worse than
+    resolving it at the moment we act (`redirect.apply_pending`).
+    """
+    key = pending_key(source, app_id)
+    pending = pending_redirects()
+    pending[key] = {"source": source, "app_id": app_id,
+                    "game_name": game_name, "roots": list(roots or []),
+                    "target": target, "asked_at": _now()}
+    set_config("pending_redirects", pending)
+    return key
+
+
+def drop_pending_redirect(source: str, app_id: str) -> bool:
+    """Forget a wish. False if there was none."""
+    key = pending_key(source, app_id)
+    pending = pending_redirects()
+    if key not in pending:
+        return False
+    del pending[key]
+    set_config("pending_redirects", pending)
+    return True
+
+
 def location_key(loc: dict[str, Any]) -> tuple[str, str]:
     """Identity of a storage location: its space plus its path in it.
 

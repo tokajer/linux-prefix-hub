@@ -63,20 +63,22 @@ def _pick_game(needle: str, source: str | None) -> dict | None:
 def _cmd_scan(source: str | None) -> int:
     from .adapters import base
     sources = (source,) if source else None
-    games = sorted(base.iter_games(sources),  # type: ignore[arg-type]
-                   key=lambda g: str(g.get("game_name", "")).lower())
-    if not games:
+    groups = base.group_by_source(
+        base.iter_games(sources))  # type: ignore[arg-type]
+    total = sum(len(games) for _s, games in groups)
+    if not total:
         print(_("No games found. Is Steam/Lutris/Heroic installed for this "
                 "user?"))
         return 0
-    print(_("{n} game(s) found:", n=len(games)) + "\n")
-    for g in games:
-        state = _("installed") if g.get("installed") else _("downloading")
-        prefix = _("ready") if g.get("prefix_path") else _("never started")
-        hook = _("connected") if g.get("managed") else _("not connected")
-        print(f"  {str(g.get('game_name'))[:34]:<34} "
-              f"[{g['source']}] [{state}] [{prefix}] [{hook}] "
-              f"id={g['app_id']}")
+    print(_("{n} game(s) found:", n=total))
+    for src, games in groups:
+        print(f"\n{base.source_label(src)}")
+        for g in games:
+            state = _("installed") if g.get("installed") else _("downloading")
+            prefix = _("ready") if g.get("prefix_path") else _("never started")
+            hook = _("connected") if g.get("managed") else _("not connected")
+            print(f"  {str(g.get('game_name'))[:34]:<34} "
+                  f"[{state}] [{prefix}] [{hook}] id={g['app_id']}")
     return 0
 
 
@@ -190,21 +192,51 @@ def _cmd_lookup(needle: str, source: str | None) -> int:
     return 0 if result["ok"] else 1
 
 
-def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
-    from .core import db, redirect, registry
-    found = db.resolve(needle)
-    if not found:
+def _redirect_later(needle: str, target: str | None, undo: bool) -> int:
+    """Nothing learned about this game yet -- the wish can still be kept.
+
+    A game nobody has played has no folder to move, but "put this one in my
+    home folder" is a perfectly sensible thing to say about it. So it is
+    remembered and acted on at the first moment it can be
+    (`core/redirect.apply_pending`), which is usually the watcher's job --
+    unless the game already has a folder, in which case it is this call's.
+    """
+    from .core import redirect
+    game = _pick_game(needle, None)
+    if game is None:
+        return 1
+
+    if undo:
+        if redirect.cancel_request(game):
+            print(_("{game} will be left where it is.",
+                    game=game.get("game_name")))
+            return 0
         print(_("'{needle}' is not in the list yet. Connect the game and play "
                 "it once so we know where it stores its data.", needle=needle))
         return 1
+
+    result = redirect.request(game, target=target)
+    moved = redirect.apply_pending(game)
+    if moved:
+        print(_("Moved: {roots}", roots=", ".join(moved)))
+        return 0
+    print(result.message)
+    return 0
+
+
+def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
+    from .core import db, redirect
+    found = db.resolve(needle)
+    if not found:
+        return _redirect_later(needle, target, undo)
     fingerprint, entry = found
 
-    roots: list[str] = []
-    for loc in entry.get("storage_locations", []):
-        root = registry.shell_folder_root(loc.get("win_path", ""))
-        if root and root not in roots:
-            roots.append(root)
+    roots = redirect.movable_roots(entry)
     if not roots:
+        if not entry.get("storage_locations"):
+            # Known as a game, but nothing learned about it yet. That is the
+            # same situation as an unknown game, so it gets the same answer.
+            return _redirect_later(needle, target, undo)
         print(_("No movable storage location known for {game}.",
                 game=entry.get("game_name")))
         if any(loc.get("where") == "game_folder"

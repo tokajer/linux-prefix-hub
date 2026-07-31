@@ -24,6 +24,11 @@ this game".
 Locations outside a shell folder (a game writing into its own install folder)
 are detected and reported, but not redirected: there is no registry key for
 them, and symlinking an install folder fights with the launcher's own updater.
+
+Everything above needs a prefix, and a prefix only exists after the first
+launch -- while the most natural moment to ask is *before* it. `request()`
+stores that wish and `apply_pending()` acts on it later; see `request` for why
+the two are apart.
 """
 from __future__ import annotations
 
@@ -237,6 +242,138 @@ def undo(fingerprint: str, win_path: str,
                                redirected=False, redirect_target=None)
 
     return RedirectResult(True, _("Moved back into the game folder."))
+
+
+def movable_roots(entry: dict[str, Any]) -> list[str]:
+    """The shell folders of one game that redirection can actually express.
+
+    A location in the game's own install folder is skipped rather than
+    reported as a failure: it is not movable by design (see the module
+    docstring), and it is not what the caller asked about.
+    """
+    roots: list[str] = []
+    for loc in entry.get("storage_locations", []):
+        if loc.get("where") == "game_folder":
+            continue
+        root = registry.shell_folder_root(str(loc.get("win_path", "")))
+        if root and root not in roots:
+            roots.append(root)
+    return roots
+
+
+# --- Asked for before the game ever ran ---------------------------------
+def request(game: dict[str, Any], roots: list[str] | None = None,
+            target: str | Path | None = None) -> RedirectResult:
+    """Remember that this game's data should live in the home folder.
+
+    Redirection needs a prefix: a registry to point somewhere else and a
+    directory to replace with a symlink. Neither exists until the game has
+    run once -- but "before I ever start it" is exactly when someone decides
+    where its data should go, and right after a PCGamingWiki lookup told them
+    what it will write. So the wish is stored under the game's own identity
+    (`db.pending_key`, not a prefix fingerprint, because that is the thing
+    missing) and `apply_pending` acts on it.
+
+    Storing a wish is not doing the thing, and the message says so.
+    """
+    db.add_pending_redirect(str(game.get("source", "")),
+                            str(game.get("app_id", "")),
+                            str(game.get("game_name", "")),
+                            roots, str(target) if target else None)
+    return RedirectResult(
+        True,
+        _("{game} has not been started yet. Its data will be moved into your "
+          "home folder the first time you play it.",
+          game=game.get("game_name") or game.get("app_id")))
+
+
+def cancel_request(game: dict[str, Any]) -> bool:
+    """Drop a stored wish again. False if there was none."""
+    return db.drop_pending_redirect(str(game.get("source", "")),
+                                    str(game.get("app_id", "")))
+
+
+def is_requested(game: dict[str, Any]) -> bool:
+    """Is a move waiting for this game's first launch?"""
+    key = db.pending_key(str(game.get("source", "")),
+                         str(game.get("app_id", "")))
+    return key in db.pending_redirects()
+
+
+def _cached_locations(game: dict[str, Any]) -> list[dict[str, Any]]:
+    """What a PCGamingWiki lookup already found, from its cache alone.
+
+    That answer may have been sitting there for weeks: a lookup before the
+    first launch has no prefix to be keyed by, so it waits in the cache until
+    something can file it. This is that something.
+    """
+    try:
+        from . import pcgw
+        return pcgw.cached_locations(str(game.get("source", "")),
+                                     str(game.get("app_id", "")))
+    except Exception:
+        return []
+
+
+def _register(game: dict[str, Any]) -> str:
+    """File a freshly created prefix in the DB, with what we already know.
+
+    Normally the launch hook does this -- but a pending wish exists precisely
+    for a game nobody connected, so nothing else would.
+    """
+    entry = {key: game.get(key)
+             for key in ("source", "app_id", "game_name", "prefix_path",
+                         "user_dir", "game_dir")}
+    locations = _cached_locations(game)
+    if locations:
+        entry["storage_locations"] = locations
+    return db.upsert_prefix(entry)
+
+
+def apply_pending(game: dict[str, Any]) -> list[str]:
+    """Act on a stored wish now that the game has a folder. Roots moved.
+
+    Empty means "not this time", never "give up": the wish stays until it has
+    been carried out in full. There are three honest reasons to come back
+    later, and the caller (`daemon/watcher.py`) simply retries every pass.
+
+      1. **Still never started.** No prefix, nothing to do.
+      2. **Started right now.** A prefix appearing means the game is booting,
+         not that it is idle -- and Wine writes its in-memory registry over
+         `user.reg` when it shuts down, so an edit made now is gone by the
+         time the player quits (CLAUDE.md rule 7). The game is filed in the
+         DB on this pass and moved on a later one.
+      3. **Nothing movable known yet.** A game we never learned anything
+         about has no storage location to move. It gets one from a lookup or
+         from its first session with the hook installed.
+    """
+    source = str(game.get("source", ""))
+    app_id = str(game.get("app_id", ""))
+    wish = db.pending_redirects().get(db.pending_key(source, app_id))
+    if wish is None:
+        return []
+    if not game.get("prefix_path") or not game.get("user_dir"):
+        return []                                            # (1)
+
+    fingerprint = _register(game)
+    if registry.prefix_in_use(str(game["prefix_path"])):
+        return []                                            # (2)
+
+    entry = db.get_prefix(fingerprint) or {}
+    roots = [str(r) for r in (wish.get("roots") or [])]
+    roots = roots or movable_roots(entry)
+    if not roots:
+        return []                                            # (3)
+
+    # One named target cannot mean two folders, and which one it would mean
+    # was not knowable when the wish was made. Several roots therefore fall
+    # back to the default layout, which gives each of them its own place.
+    target = wish.get("target") if len(roots) == 1 else None
+    moved = [root for root in roots
+             if redirect(fingerprint, root, target).ok]
+    if len(moved) == len(roots):
+        db.drop_pending_redirect(source, app_id)
+    return moved
 
 
 def reapply(fingerprint: str) -> list[str]:

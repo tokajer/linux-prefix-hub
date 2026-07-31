@@ -56,7 +56,8 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `adapters/generic.py` | Hand-rolled setups: discovery by shape alone, path = id, no config to hook — the user gets a command. Runs **last**, skips what the others claim |
 | `daemon/watcher.py` | inotify on steamapps + periodic rescan; new-game and update notifications |
 | `gui/welcome.py` | Terminal setup flow. Logic split from presentation, shared with the GTK UI |
-| `gui/app.py` | GTK4/libadwaita window: game list, connect switch, lookup button, game-folder row, move-home switch. Presentation only |
+| `gui/app.py` | GTK4/libadwaita window: game list grouped per launcher, connect switch, lookup button, game-folder row, move-home switch. Presentation only |
+| `gui/tray.py` | Tray icon spoken straight onto the session bus (StatusNotifierItem + dbusmenu). **No GTK in it** — AppIndicator is GTK3-linked and would abort a GTK4 process. Degrades to `live == False` |
 | `gui/tasks.py` | One function: run blocking work off the GTK main loop, land the result via `idle_add` |
 
 ## Rules that are easy to break
@@ -91,11 +92,20 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
    location"/"Speicherort" for a place. `location["type"]` still says `saves`
    — that is the type of one location, not the name of the thing.
 7. **Registry edits need the prefix idle** (`registry.prefix_in_use`), because
-   Wine flushes its in-memory registry over `user.reg` on shutdown.
-8. Line length 79. `from __future__ import annotations`. Lazy imports inside
+   Wine flushes its in-memory registry over `user.reg` on shutdown. A prefix
+   *appearing* is therefore the worst moment to write into it, not the best:
+   the game is booting. `redirect.apply_pending` files the game then and
+   moves it on a later pass — an empty return means "next pass", never
+   "give up".
+8. **Nothing may close into a tray that is not there.** `gui/tray.py` answers
+   `live`; if it is False the window keeps GTK's own behaviour and closing
+   ends the app. An app the user can neither see nor quit is worse than one
+   that exits when closed. `live` is asked again on every close, because a
+   desktop shell restart takes the tray host away.
+9. Line length 79. `from __future__ import annotations`. Lazy imports inside
    CLI branches.
-9. Things that need real hardware are marked `VERIFY-ON-DEVICE` in the code
-   and collected in the README.
+10. Things that need real hardware are marked `VERIFY-ON-DEVICE` in the code
+    and collected in the README.
 
 ## Adding a launcher
 
@@ -110,6 +120,7 @@ raising.
 `~/.config/linux-prefix-hub/{config.json,prefixes.json,known_games.json,snapshots/,pcgamingwiki/}`
 (`config.json` keys: `install_dir`, `redirect_root`, `language`,
 `online_lookup`, `game_folders`, `ignore_paths`, `setup_done`,
+`background_tray`, `pending_redirects`,
 `update_check`/`update_notified`),
 `~/.local/share/linux-prefix-hub/LinuxPrefixHub.AppImage`,
 `~/.local/bin/linux-prefix-hub-{wrapper,hook,daemon}`,

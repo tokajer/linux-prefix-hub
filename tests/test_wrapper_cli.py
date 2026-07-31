@@ -428,8 +428,33 @@ def test_set_language_is_remembered(monkeypatch, capsys):
 
 
 def test_unknown_game_for_redirect(monkeypatch, capsys):
+    """A name that is no game at all says so -- it is not a pending wish.
+
+    "Not learned about yet" and "does not exist" used to share one message.
+    Now that the first case can be answered (the wish is stored, see
+    `test_redirect_before_the_first_launch_is_remembered`), the second one
+    has to be told apart or every typo turns into a wish nothing can meet.
+    """
     assert _run(monkeypatch, "--redirect", "nothing-like-this") == 1
-    assert "not in the list yet" in capsys.readouterr().out
+    assert "No game found" in capsys.readouterr().out
+
+
+def test_redirect_before_the_first_launch_is_remembered(monkeypatch, capsys):
+    """Nothing to move yet is not the same as nothing to answer."""
+    from linux_prefix_hub.adapters import base
+    from linux_prefix_hub.core import db
+
+    monkeypatch.setattr(base, "iter_games", lambda sources=None: iter([
+        {"source": "steam", "app_id": "2310", "game_name": "Quake",
+         "installed": True, "prefix_path": None, "user_dir": None}]))
+
+    assert _run(monkeypatch, "--redirect", "Quake") == 0
+    assert "first time you play it" in capsys.readouterr().out
+    assert "steam:2310" in db.pending_redirects()
+
+    assert _run(monkeypatch, "--undo-redirect", "Quake") == 0
+    assert "left where it is" in capsys.readouterr().out
+    assert db.pending_redirects() == {}
 
 
 def test_version_flag(monkeypatch, capsys):

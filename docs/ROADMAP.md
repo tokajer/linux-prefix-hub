@@ -169,13 +169,78 @@ one location. `--set-save-folder` still works — it is a flag in somebody's
 script, and a better word is not worth breaking it — but `--set-data-folder`
 is the name now.
 
+## ✅ The list, cut by launcher
 
+`base.group_by_source()` buckets a library per source and the window draws one
+`Adw.PreferencesGroup` per bucket; `--scan` prints the same shape. The order is
+`base.SOURCES` — the order the adapters are asked in — so nobody has to keep a
+second one in step, and a source we do not know gets a heading of its own
+rather than being dropped.
 
-## 🔭 Watch for first launch
+The heading also took a word off every row: the game subtitle used to read
+"Steam - ready" and now reads "ready", because the group above it already
+said Steam.
 
-The watcher can also react to `compatdata/<appid>/pfx` appearing, which is the
-safe moment to apply a redirection the user asked for while the game was never
-started.
+## ✅ Tray icon (`gui/tray.py`)
+
+The window is not the app: an update check, a new-game notification and a move
+waiting for a game's first launch all outlive it. So closing the window now
+hides it and the app stays reachable from the tray.
+
+**There is no library for this.** GTK4 removed `Gtk.StatusIcon`, and the usual
+answer — AppIndicator, Ayatana's fork or Canonical's original — is linked
+against GTK3: loading its typelib in a GTK4 process aborts the app outright
+("Using GTK 2/3 and GTK 4 in the same process is not supported"). What sits
+underneath those libraries on every desktop that has a tray is two D-Bus
+interfaces, `org.kde.StatusNotifierItem` and `com.canonical.dbusmenu`, and Gio
+can export both without caring which GTK is loaded. So we speak them directly.
+
+The three decisions worth remembering:
+
+- **Nothing may close into a tray that is not there.** No `gi`, no session
+  bus, or no `StatusNotifierWatcher` (plain GNOME without the AppIndicator
+  extension) and `Tray.live` stays False, the close handler is never
+  connected, and the window behaves exactly as it did before. An app you can
+  neither see nor quit is a far worse bug than one that exits when you close
+  it.
+- **`live` had to be answerable before the main loop runs.** The caller
+  decides whether to connect that handler the moment the window is built, so
+  asking the bus who owns the watcher name is a *synchronous* call at startup
+  (`_watcher_present`); the asynchronous name watch only keeps it current
+  afterwards. Built the other way round it read False for every caller that
+  ever asked, and the tray silently did nothing at all.
+- **Registration waits for both halves.** The host has to be on the bus *and*
+  we have to own the name we are handing it, and those arrive in either
+  order — so both callbacks funnel into `_register_with_host` and whichever
+  is second does the work.
+
+`background_tray` in `config.json` (a switch in Settings) puts the old
+behaviour back for anyone who wants the window to be the app after all.
+
+The update entry lives in that menu too, and an update waiting turns the icon
+to `NeedsAttention` — which is the one thing an icon can say without a
+notification somebody has to dismiss.
+
+## ✅ Watch for first launch
+
+The watcher now also watches every library's `compatdata` directory, and
+carries out moves the user asked for before the game had anything to move
+(`redirect.request` → `redirect.apply_pending`).
+
+**The roadmap entry that asked for this had the timing backwards, and the code
+says so.** `compatdata/<appid>` appearing is *not* the safe moment to apply a
+redirection — it is the moment the game is booting and Wine is creating the
+prefix, and Wine writes its in-memory registry over `user.reg` when it shuts
+down (rule 7). An edit made then is gone by the time the player quits. So the
+appearance is what we *learn* from — the game is filed in the DB, with any
+PCGamingWiki answer that has been waiting in the cache for a prefix to be
+keyed by — and the move happens on the first pass that finds the folder idle.
+`apply_pending` returning an empty list means "next pass", never "give up".
+
+That also answers where such a wish can live: not in `prefixes.json`, which is
+keyed by the prefix, because the whole point is that there is none yet.
+`pending_redirects` in `config.json` is keyed by `<source>:<app_id>` — the
+only identity a game has before it has a folder.
 
 
 

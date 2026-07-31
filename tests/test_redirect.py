@@ -174,3 +174,136 @@ def test_a_running_game_blocks_the_move(game, monkeypatch):
     monkeypatch.setattr(registry, "prefix_in_use", lambda prefix: True)
     result = redirect.redirect(fingerprint, "Documents")
     assert not result.ok and "still running" in result.message
+
+
+# --- Asked for before the game ever ran ----------------------------------
+def _never_started(name="Quake", app_id="2310"):
+    """A discovery dict for a game that has no folder yet."""
+    return {"source": "steam", "app_id": app_id, "game_name": name,
+            "installed": True, "prefix_path": None, "user_dir": None}
+
+
+def _started(prefix, name="Quake", app_id="2310"):
+    return {**_never_started(name, app_id), "prefix_path": str(prefix),
+            "user_dir": "steamuser"}
+
+
+def test_a_wish_is_stored_under_the_games_own_identity():
+    from linux_prefix_hub.core import db, redirect
+    game = _never_started()
+
+    assert not redirect.is_requested(game)
+    result = redirect.request(game)
+
+    assert result.ok and "has not been started yet" in result.message
+    assert redirect.is_requested(game)
+    # Not the prefix DB: there is no prefix to key it by, which is the point.
+    assert db.load_prefixes() == {}
+    assert "steam:2310" in db.pending_redirects()
+
+
+def test_a_wish_can_be_taken_back():
+    from linux_prefix_hub.core import redirect
+    game = _never_started()
+    redirect.request(game)
+
+    assert redirect.cancel_request(game)
+    assert not redirect.is_requested(game)
+    assert not redirect.cancel_request(game)      # and again is a no-op
+
+
+def test_nothing_happens_to_a_game_nobody_asked_about(fake_prefix):
+    from linux_prefix_hub.core import redirect
+    assert redirect.apply_pending(_started(fake_prefix)) == []
+
+
+def test_a_wish_waits_while_the_game_has_no_folder():
+    from linux_prefix_hub.core import db, redirect
+    game = _never_started()
+    redirect.request(game)
+
+    assert redirect.apply_pending(game) == []
+    assert redirect.is_requested(game)            # still waiting
+    assert db.load_prefixes() == {}
+
+
+def test_the_first_launch_files_the_game_but_does_not_edit_it(fake_prefix,
+                                                              monkeypatch):
+    """A prefix appearing means the game is *starting*, not that it is idle.
+
+    Wine writes its in-memory registry over user.reg on shutdown, so an edit
+    made now would be gone by the time the player quits (CLAUDE.md rule 7).
+    Learning about the game is safe, and that is all that may happen here.
+    """
+    from linux_prefix_hub.core import db, redirect, registry
+    monkeypatch.setattr(registry, "prefix_in_use", lambda prefix: True)
+    game = _started(fake_prefix)
+    redirect.request(game)
+
+    assert redirect.apply_pending(game) == []
+
+    entry = db.find_prefix("steam", "2310")
+    assert entry is not None and entry[1]["game_name"] == "Quake"
+    assert redirect.is_requested(game)            # retried on a later pass
+
+
+def test_the_wish_lands_once_the_game_is_idle_again(fake_prefix,
+                                                    isolated_home):
+    from linux_prefix_hub.core import db, redirect
+    docs = fake_prefix / "drive_c/users/steamuser/Documents/My Games/Quake"
+    docs.mkdir(parents=True)
+    (docs / "save0.sav").write_text("progress")
+
+    game = _started(fake_prefix)
+    redirect.request(game)
+    # What the game has told us about itself by now (a first session with the
+    # hook, or a PCGamingWiki lookup folded in).
+    db.upsert_prefix({**game, "storage_locations": [
+        {"type": "saves", "win_path": "Documents/My Games/Quake"}]})
+
+    assert redirect.apply_pending(game) == ["Documents"]
+
+    target = isolated_home / "Games/linux-prefix-hub/Quake/Documents"
+    assert (target / "My Games/Quake/save0.sav").read_text() == "progress"
+    # Carried out in full, so it is not carried out twice.
+    assert not redirect.is_requested(game)
+
+
+def test_a_wish_survives_a_game_that_has_told_us_nothing(fake_prefix):
+    from linux_prefix_hub.core import redirect
+    game = _started(fake_prefix)
+    redirect.request(game)
+
+    assert redirect.apply_pending(game) == []
+    assert redirect.is_requested(game)
+
+
+def test_a_lookup_waiting_in_the_cache_is_folded_in(fake_prefix,
+                                                    isolated_home):
+    """The answer PCGamingWiki gave before there was a prefix to file it by."""
+    from linux_prefix_hub.core import db, pcgw, redirect
+    pcgw.store_cached("steam", "2310", {
+        "reason": "", "page": "Quake", "locations": [
+            {"type": "saves", "where": "prefix",
+             "win_path": "Documents/My Games/Quake",
+             "detected_by": "pcgamingwiki"}]})
+
+    game = _started(fake_prefix)
+    redirect.request(game)
+
+    assert redirect.apply_pending(game) == ["Documents"]
+    entry = db.find_prefix("steam", "2310")
+    assert entry is not None
+    assert entry[1]["storage_locations"][0]["detected_by"] == "pcgamingwiki"
+
+
+def test_movable_roots_skips_what_cannot_be_moved():
+    from linux_prefix_hub.core import redirect
+    entry = {"storage_locations": [
+        {"win_path": "Documents/My Games/Q"},
+        {"win_path": "Documents/Other"},              # same root, once
+        {"win_path": "AppData/Roaming/Q"},
+        {"win_path": "Q/Data"},                       # no shell folder
+        {"win_path": "Documents/X", "where": "game_folder"},
+    ]}
+    assert redirect.movable_roots(entry) == ["Documents", "AppData/Roaming"]

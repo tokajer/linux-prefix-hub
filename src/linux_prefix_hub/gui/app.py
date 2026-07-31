@@ -13,9 +13,12 @@ Vocabulary rule (CLAUDE.md #6): the user reads "game folder", "game data",
 the whole of it, because half of what we find is settings and logs.
 
 Structure:
-  LphApplication   -- Adw.Application, one window
+  LphApplication   -- Adw.Application, one window, optionally a tray icon
   MainWindow       -- header + game list, everything else is a dialog
   GameRow          -- one expander per game: connect switch + storage locations
+
+The list is cut by launcher (`base.group_by_source`), one group per source in
+the adapters' own order.
 
 Anything that touches a disk goes through `tasks.run` so the window stays
 responsive; widgets are only ever touched from the main loop.
@@ -89,13 +92,14 @@ class GameRow(Adw.ExpanderRow):
 
     # --- presentation ----------------------------------------------------
     def _subtitle(self) -> str:
-        from ..adapters import base
-        source = base.source_label(str(self._game.get("source", "")))
+        # No source here: the group this row sits in is already named after
+        # it (`MainWindow._show`), and repeating it in every subtitle only
+        # crowds out the part that differs.
         if not self._game.get("installed"):
-            return _("{source} - not fully installed yet", source=source)
+            return _("not fully installed yet")
         if not self._game.get("prefix_path"):
-            return _("{source} - not started yet", source=source)
-        return _("{source} - ready", source=source)
+            return _("not started yet")
+        return _("ready")
 
     def _sync_switch(self, active: bool) -> None:
         self._syncing = True
@@ -114,6 +118,10 @@ class GameRow(Adw.ExpanderRow):
         folder = self._game.get("prefix_path")
         if folder:
             self.add_row(GameFolderRow(self._window, str(folder)))
+        else:
+            # Never started: there is nothing to move yet, only something to
+            # ask for. See `PendingRow`.
+            self.add_row(PendingRow(self._window, self._game))
 
         found = self._entry()
         locations = found[1].get("storage_locations", []) if found else []
@@ -268,6 +276,55 @@ class GameFolderRow(Adw.ActionRow):
         self.set_activatable(False)
 
 
+class PendingRow(Adw.ActionRow):
+    """Ask for a move before there is anything to move.
+
+    A game nobody has started has no folder yet: no registry to point
+    somewhere else, no directory to replace with a link. The wish is the only
+    thing that can exist this early -- so it is what gets stored, and the
+    watcher carries it out once the game has run and let go again
+    (`core/redirect.apply_pending`).
+
+    Deliberately the same switch as `LocationRow`, in the same place, saying
+    the same thing: from where the user sits this is one decision, and only
+    the moment it can be acted on differs.
+    """
+
+    def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
+        super().__init__()
+        self._window = window
+        self._game = game
+        self._syncing = False
+
+        self.set_title(esc(_("Keep this game's data in your home folder")))
+        self.set_subtitle(esc(_("as soon as you have played it once")))
+
+        self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._sync_switch(redirect.is_requested(game))
+        self._switch.connect("state-set", self._on_toggled)
+        self.add_suffix(self._switch)
+        self.set_activatable(False)
+
+    def _sync_switch(self, active: bool) -> None:
+        self._syncing = True
+        self._switch.set_active(active)
+        self._switch.set_state(active)
+        self._syncing = False
+
+    def _on_toggled(self, _switch: Gtk.Switch, wanted: bool) -> bool:
+        if self._syncing:
+            return False
+        # Writing one small JSON key -- no disk walk, nothing to move yet.
+        if wanted:
+            self._window.toast(redirect.request(self._game).message)
+        else:
+            redirect.cancel_request(self._game)
+            self._window.toast(_("{game} will be left where it is.",
+                                 game=self._game.get("game_name", "")))
+        self._sync_switch(wanted)
+        return True
+
+
 class FixedLocationRow(Adw.ActionRow):
     """A location we can show but not move.
 
@@ -397,7 +454,29 @@ class SettingsDialog:
         group.add(self._row)
         page.add(group)
         page.add(self._online_group())
+        page.add(self._tray_group())
         self._dialog.add(page)
+
+    def _tray_group(self) -> Adw.PreferencesGroup:
+        """Whether closing the window ends the app or only hides it."""
+        group = Adw.PreferencesGroup(
+            title=_("When you close the window"),
+            description=_("Keeps {app} in the system tray, so it stays one "
+                          "click away and can tell you about new games and "
+                          "updates. Takes effect the next time you start it.",
+                          app=paths.APP_TITLE))
+        row = Adw.ActionRow(title=esc(_("Keep running in the background")))
+        switch = Gtk.Switch(valign=Gtk.Align.CENTER,
+                            active=db.background_tray())
+        switch.connect("state-set", self._on_tray)
+        row.add_suffix(switch)
+        row.set_activatable(False)
+        group.add(row)
+        return group
+
+    def _on_tray(self, _switch: Gtk.Switch, wanted: bool) -> bool:
+        db.set_config("background_tray", bool(wanted))
+        return False              # let the switch draw the new state itself
 
     def _online_group(self) -> Adw.PreferencesGroup:
         """The one switch that keeps the app entirely offline."""
@@ -470,10 +549,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_default_size(680, 620)
 
         self._toasts = Adw.ToastOverlay()
-        self._group = Adw.PreferencesGroup(
-            title=_("Your games"),
-            description=_("Turn a game on so it can tell us where it "
-                          "stores its data."))
+        self._groups: list[Adw.PreferencesGroup] = []
 
         self._spinner = Adw.StatusPage(title=_("Looking for your games..."))
         self._spinner.set_child(Adw.Spinner() if hasattr(Adw, "Spinner")
@@ -491,7 +567,6 @@ class MainWindow(Adw.ApplicationWindow):
         view.set_content(self._toasts)
         self.set_content(view)
 
-        self._rows: list[GameRow] = []
         self.reload()
 
     # --- chrome ----------------------------------------------------------
@@ -544,11 +619,28 @@ class MainWindow(Adw.ApplicationWindow):
         self._menu.remove(self._update_item)
         self._menu.insert(self._update_item, label, action)
 
+        # The tray carries the same offer: with the window closed it is the
+        # only place the news can land (`LphApplication.update_offered`).
+        app = self.get_application()
+        if app is not None:
+            app.update_offered(version, label)
+
     def _build_list(self) -> Gtk.Widget:
+        """One column, filled with a group per launcher by `_show`."""
         scroller = Gtk.ScrolledWindow(vexpand=True)
         clamp = Adw.Clamp(maximum_size=620, margin_top=18, margin_bottom=18,
                           margin_start=12, margin_end=12)
-        clamp.set_child(self._group)
+        self._column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                               spacing=18)
+
+        # Said once, above everything, instead of once per launcher heading.
+        hint = Gtk.Label(label=_("Turn a game on so it can tell us where it "
+                                 "stores its data."),
+                         wrap=True, xalign=0.0)
+        hint.add_css_class("dim-label")
+        self._column.append(hint)
+
+        clamp.set_child(self._column)
         scroller.set_child(clamp)
         return scroller
 
@@ -565,32 +657,37 @@ class MainWindow(Adw.ApplicationWindow):
     def reload(self) -> None:
         self._stack.set_visible_child_name("loading")
 
-        def work() -> list[dict[str, Any]]:
+        def work() -> list[tuple[str, list[dict[str, Any]]]]:
             from ..adapters import base
-            return sorted(base.iter_games(),
-                          key=lambda g: str(g.get("game_name", "")).lower())
+            # Grouped off the main loop with the scan itself: the order is
+            # the adapters' own and nothing here gets to invent a second one.
+            return base.group_by_source(base.iter_games())
 
-        def done(games: Any, error: Exception | None) -> None:
+        def done(groups: Any, error: Exception | None) -> None:
             if error is not None:
                 self._stack.set_visible_child_name("empty")
                 self.toast(_("Something went wrong: {error}",
                              error=str(error)))
                 return
-            self._show(games or [])
+            self._show(groups or [])
 
         tasks.run(work, done)
 
-    def _show(self, games: list[dict[str, Any]]) -> None:
-        for row in self._rows:
-            self._group.remove(row)
-        self._rows = []
+    def _show(self, groups: list[tuple[str, list[dict[str, Any]]]]) -> None:
+        from ..adapters import base
 
-        for game in games:
-            row = GameRow(self, game)
-            self._group.add(row)
-            self._rows.append(row)
+        for group in self._groups:
+            self._column.remove(group)
+        self._groups = []
 
-        self._stack.set_visible_child_name("list" if games else "empty")
+        for source, games in groups:
+            group = Adw.PreferencesGroup(title=esc(base.source_label(source)))
+            for game in games:
+                group.add(GameRow(self, game))
+            self._column.append(group)
+            self._groups.append(group)
+
+        self._stack.set_visible_child_name("list" if groups else "empty")
 
     # --- feedback --------------------------------------------------------
     def toast(self, message: str) -> None:
@@ -629,6 +726,12 @@ class LphApplication(Adw.Application):
     def __init__(self) -> None:
         super().__init__(application_id=APP_ID)
         self._window: MainWindow | None = None
+        self._tray: Any = None
+        # The window checks its update cache while it is being built, which is
+        # before the tray exists -- so the answer is kept here and the tray
+        # picks it up when it starts (`_start_tray`).
+        self._update_ready = False
+        self._update_label = _("Check for updates")
         for name, handler in (("settings", self._on_settings),
                               ("check-update", self._on_check_update),
                               ("install-update", self._on_install_update),
@@ -643,9 +746,71 @@ class LphApplication(Adw.Application):
     def do_activate(self) -> None:          # noqa: N802 -- GObject vfunc
         if self._window is None:
             self._window = MainWindow(application=self)
+            self._start_tray()
         self._window.present()
         if not db.load_config().get("setup_done"):
             self._first_run()
+
+    def do_shutdown(self) -> None:          # noqa: N802 -- GObject vfunc
+        if self._tray is not None:
+            self._tray.close()
+        Adw.Application.do_shutdown(self)
+
+    # --- tray -------------------------------------------------------------
+    def _start_tray(self) -> None:
+        """Put the app in the tray and let the window close into it.
+
+        Only when there really is one. A window that closes into a tray that
+        does not exist is an app the user can neither see nor quit -- so the
+        close handler is connected *after* `tray.live` says yes, and asks
+        again on every close in case the desktop shell went away since.
+
+        `hold()` is what actually keeps us running: without it GTK ends the
+        application with its last window, tray or no tray.
+        """
+        if not db.background_tray() or self._window is None:
+            return
+        from . import tray
+
+        self._tray = tray.Tray(
+            title=paths.APP_TITLE, icon=paths.APP_NAME,
+            on_activate=self.activate,
+            items=[tray.Item("show", _("Show window"), self.activate),
+                   tray.Item("update", self._update_label,
+                             self._on_tray_update),
+                   tray.Item("quit", _("Quit"), self.quit)])
+        if not self._tray.live:
+            self._tray = None
+            return
+        self._tray.set_attention(self._update_ready)
+
+        self.hold()
+        self._window.connect("close-request", self._on_close)
+
+    def _on_close(self, window: MainWindow) -> bool:
+        """Hide instead of quit -- but only while the icon is still there."""
+        if self._tray is None or not self._tray.live:
+            return False                     # let the window close for real
+        window.set_visible(False)
+        return True                          # handled: do not destroy it
+
+    def update_offered(self, version: str | None, label: str) -> None:
+        """The window found (or lost) an update; keep the tray in step."""
+        self._update_ready = bool(version)
+        self._update_label = label
+        if self._tray is None:
+            return                    # not started yet, or no tray at all
+        self._tray.set_label("update", label)
+        self._tray.set_attention(self._update_ready)
+
+    def _on_tray_update(self) -> None:
+        """Whatever that entry currently offers: check, or install.
+
+        One entry rather than two, because it reads as one thing to do about
+        updates -- and its label already says which of the two it is.
+        """
+        self.activate_action(
+            "install-update" if self._update_ready else "check-update", None)
 
     def _first_run(self) -> None:
         """One quiet confirmation, then set ourselves up."""
