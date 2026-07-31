@@ -11,7 +11,7 @@ see the words prefix, Wine or `steamuser`.
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q            # 253 tests, ~1s, no real Steam needed
+.venv/bin/python -m pytest -q            # 297 tests, ~1s, no real Steam needed
 .venv/bin/ruff check src tests           # lint (config pinned in pyproject)
 PYTHONPATH=src python -m linux_prefix_hub --scan
 HOME=/tmp/x PYTHONPATH=src python -m linux_prefix_hub   # setup flow, safely
@@ -45,7 +45,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `core/wrapper.py` | The launch hook, both shapes (wrap and pre/post). Must never break a launch |
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
 | `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals. `cloud_warning()` names the other writer on that folder before the move |
-| `core/integrate.py` | AppImage relocation, the three shims, systemd unit, desktop entry. Idempotent |
+| `core/integrate.py` | AppImage relocation, the three shims, systemd unit, desktop entry (named after `paths.APP_ID`, see rule 15), icon. Idempotent |
 | `core/updater.py` | Velopack: `check`, then `download()` / `finish()` — two halves because an update can only be applied once **this process is gone**. `app_hook()` only in the AppImage. GearLever wins if present |
 | `core/uninstall.py` | Remove the app: revert every moved folder, disconnect every hook, *then* delete. A failed step stops the whole thing |
 | `core/vdf.py` | Valve KeyValues read **and write** (localconfig round-trip) |
@@ -57,7 +57,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `adapters/generic.py` | Hand-rolled setups: discovery by shape alone, path = id, no config to hook — the user gets a command. Runs **last**, skips what the others claim |
 | `daemon/watcher.py` | inotify on steamapps + periodic rescan; new-game and update notifications |
 | `gui/welcome.py` | Terminal setup flow. Logic split from presentation, shared with the GTK UI |
-| `gui/app.py` | GTK4/libadwaita window: game list grouped per launcher, connect switch, lookup button, hide button, game-folder row, move-home switch; the header's eye toggle shows hidden games again. Presentation only |
+| `gui/app.py` | GTK4/libadwaita window: game list grouped per launcher, connect switch, lookup button, hide button, game-folder row, move-home switch; the header's eye toggle shows hidden games again; the settings dialog holds the data folder, the two switches and removing the app. Presentation only |
 | `gui/tray.py` | Tray icon spoken straight onto the session bus (StatusNotifierItem + dbusmenu). **No GTK in it** — AppIndicator is GTK3-linked and would abort a GTK4 process. Degrades to `live == False` |
 | `gui/tasks.py` | One function: run blocking work off the GTK main loop, land the result via `idle_add` |
 
@@ -139,6 +139,13 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
     a step that fails stops it there — each stage on its own leaves a machine
     that works. Cleanup is `rmdir` only, never `rmtree` on anything that
     could hold game data.
+15. **`paths.APP_ID` is one string in three places, and they have to agree.**
+    The window carries it (`gui.app.main` sets it as the *program* name —
+    that, not the application id, is what GTK sends as the Wayland `app_id` /
+    X11 `WM_CLASS`), the desktop entry is named after it, and the icon is
+    installed under it. The desktop matches an open window to an entry by
+    that name and takes the icon from there; disagree on any one of them and
+    the task bar draws the interpreter's icon next to our window.
 
 ## Adding a launcher
 

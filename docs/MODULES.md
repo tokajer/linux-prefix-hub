@@ -502,8 +502,8 @@ completely different feed, in config.json — no rebuild needed.
 ## `core/uninstall.py` — taking the app back off the machine
 
 `plan()`, `blockers()`, `revert_all()`, `disconnect_all()`, `remove_files()`,
-`run(keep_settings)`. Used by `--uninstall` and by the window's
-"Remove {app}…" menu entry.
+`run(keep_settings)`. Used by `--uninstall` and by "Remove {app}" at the
+bottom of the window's settings page.
 
 Uninstalling is not "delete some files", because two of the things this app
 did live inside *other* people's configuration and outlive it:
@@ -760,10 +760,21 @@ layer).
 `install_desktop_entry`, `install_icon`, `full_setup`. All idempotent.
 
 `install_icon` copies the packaged PNG into
-`~/.local/share/icons/hicolor/256x256/apps/`. Both the menu entry
-(`Icon=linux-prefix-hub`) and the About dialog (`application_icon=`) name the
-icon rather than carry it, so without that copy both render a blank
-placeholder — which is what the application menu showed.
+`~/.local/share/icons/hicolor/256x256/apps/`, under **two** names. Nothing
+that shows the icon carries it, they all name it: the About dialog and the
+tray ask for `linux-prefix-hub`, the desktop entry for `paths.APP_ID`. Without
+a copy in the theme each of them renders a blank placeholder — which is what
+the application menu showed.
+
+`install_desktop_entry` writes `io.github.tokajer.LinuxPrefixHub.desktop`, not
+`linux-prefix-hub.desktop`, and adds `StartupWMClass`. That name is not
+cosmetic: it is how the task bar gets from an **open window** to this app.
+GTK sends the *program* name to the compositor as the window's app id
+(X11: `WM_CLASS`), `gui.app.main` sets it to `paths.APP_ID`, and the shell
+then looks for the entry of exactly that name. While they disagreed the
+program name was the interpreter's and an open window drew python's icon.
+The entry it replaces is deleted as it is written (`LEGACY_DESKTOP_FILE`) —
+two files would be two menu items for one app.
 
 **Building on it:** the shims are deliberately dumb. If the entry point
 changes, only `_shim_body` needs to know; the fixed paths stay.
@@ -871,6 +882,13 @@ calls `download()`, and only a `ready` answer reaches `_finish_update`, which
 asks whether the app may close — because closing it *is* the install step
 (`core/updater.py`). "Later" hands nothing over, so the next exit is an
 ordinary one and the download waits for `app_hook()` at the next start.
+
+Removing the app hangs off the settings dialog, not the header menu
+(`SettingsDialog._remove_group`): it is the one thing in the app no switch
+flicks back, and one slip away from "About" is a poor place for it. The
+button closes the dialog and activates `app.uninstall`, because everything
+after it puts its dialogs on the window — underneath the settings dialog, if
+that were still open.
 
 `_on_uninstall` runs `uninstall.plan()` off the main loop first: a
 confirmation written before we know what there is to confirm would ask

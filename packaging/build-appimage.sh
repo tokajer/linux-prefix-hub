@@ -107,26 +107,33 @@ rm -rf "${APPDIR}/usr/share/applications" \
 
 install -m 755 "${ROOT}/packaging/AppRun" "${APPDIR}/AppRun"
 
-cat > "${APPDIR}/linux-prefix-hub.desktop" << EOF
+# Named after the app id, exactly like the entry the app installs for itself
+# (core/integrate.py) and like the app id the window carries: that name is how
+# a desktop gets from an open window to this app's icon. StartupWMClass says
+# the same thing for anything that integrates the AppImage under a name of
+# its own -- GearLever renames the entry, it does not rewrite this key.
+APP_ID="io.github.tokajer.LinuxPrefixHub"
+cat > "${APPDIR}/${APP_ID}.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Linux Prefix Hub
 Comment=Manage where your games store their data
 Exec=AppRun
-Icon=linux-prefix-hub
+Icon=${APP_ID}
+StartupWMClass=${APP_ID}
 Categories=Game;Utility;
 Terminal=false
 X-AppImage-Version=${VERSION}
 EOF
 mkdir -p "${APPDIR}/usr/share/applications"
-cp "${APPDIR}/linux-prefix-hub.desktop" "${APPDIR}/usr/share/applications/"
+cp "${APPDIR}/${APP_ID}.desktop" "${APPDIR}/usr/share/applications/"
 
 ICON="${ROOT}/src/linux_prefix_hub/data/linux-prefix-hub.png"
 [ -f "${ICON}" ] || python3 "${ROOT}/packaging/make-icon.py" "${ICON}"
-cp "${ICON}" "${APPDIR}/linux-prefix-hub.png"
+cp "${ICON}" "${APPDIR}/${APP_ID}.png"
 cp "${ICON}" "${APPDIR}/.DirIcon"
 mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
-cp "${ICON}" "${APPDIR}/usr/share/icons/hicolor/256x256/apps/"
+cp "${ICON}" "${APPDIR}/usr/share/icons/hicolor/256x256/apps/${APP_ID}.png"
 
 # --- 4. pack --------------------------------------------------------------
 say "Fetching appimagetool"

@@ -39,7 +39,7 @@ from ..core import db, desktop, paths, redirect, registry  # noqa: E402
 from ..core.i18n import _  # noqa: E402
 from . import tasks  # noqa: E402
 
-APP_ID = "io.github.tokajer.LinuxPrefixHub"
+APP_ID = paths.APP_ID
 
 
 def esc(text: Any) -> str:
@@ -571,7 +571,8 @@ class LocationRow(Adw.ActionRow):
 
 
 class SettingsDialog:
-    """Where moved saves are kept. Built as a dialog, presented on the window.
+    """Everything about the app itself: where moved game data is kept, the
+    two switches, and removing it again. Presented on the window.
 
     `Adw.PreferencesDialog` is libadwaita 1.5+; older systems get the window
     flavour. The app runs on whatever GTK the host has (see
@@ -609,6 +610,7 @@ class SettingsDialog:
         page.add(group)
         page.add(self._online_group())
         page.add(self._tray_group())
+        page.add(self._remove_group())
         self._dialog.add(page)
 
     def _tray_group(self) -> Adw.PreferencesGroup:
@@ -652,6 +654,42 @@ class SettingsDialog:
     def _on_online(self, _switch: Gtk.Switch, wanted: bool) -> bool:
         db.set_config("online_lookup", bool(wanted))
         return False              # let the switch draw the new state itself
+
+    def _remove_group(self) -> Adw.PreferencesGroup:
+        """Taking the app back off the machine. Last on the page.
+
+        Here rather than in the header menu: it is the one thing in this app
+        that no switch flicks back, and this is the page a user opens when
+        they are done with it. The description says what it does *before*
+        the button, because the first dialog it opens is already the plan.
+        """
+        group = Adw.PreferencesGroup(
+            title=_("Remove {app}", app=paths.APP_TITLE),
+            description=_("Every folder that was moved goes back into its "
+                          "game and every game is disconnected again, then "
+                          "the app removes itself. You are shown what that "
+                          "means before anything happens."))
+        row = Adw.ActionRow(
+            title=esc(_("Move everything back, then remove the app")))
+        button = Gtk.Button(label=_("Remove..."), valign=Gtk.Align.CENTER)
+        button.add_css_class("destructive-action")
+        button.connect("clicked", self._on_remove)
+        row.add_suffix(button)
+        row.set_activatable(False)
+        group.add(row)
+        return group
+
+    def _on_remove(self, *_a: Any) -> None:
+        """Hand the question to the window and get out of its way.
+
+        Everything after this belongs to `LphApplication._on_uninstall`,
+        which asks `uninstall.plan()` first and then puts its dialogs on the
+        window -- underneath this one, if it were still open.
+        """
+        app = self._window.get_application()
+        self._dialog.close()
+        if app is not None:
+            app.activate_action("uninstall", None)
 
     def present(self) -> None:
         if hasattr(self._dialog, "present"):
@@ -750,11 +788,11 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append(_("Settings"), "app.settings")
         menu.append(_("Check for updates"), "app.check-update")
         menu.append(_("Repair setup"), "app.integrate")
-        # After "Repair setup", so `_update_item` keeps its index: a GMenu
-        # item can only be replaced by position (see `offer_update`).
-        menu.append(_("Remove {app}...", app=paths.APP_TITLE),
-                    "app.uninstall")
         menu.append(_("About"), "app.about")
+        # Removing the app lives in the settings dialog (`SettingsDialog`),
+        # not here: this menu is what you do *with* the app, and a menu item
+        # one slip away from "About" is a poor place for the one entry that
+        # ends it.
         # Remembered so the update entry can turn into "install" once a
         # check found something -- a GMenu item cannot be relabelled, only
         # replaced (see `offer_update`).
@@ -1329,6 +1367,16 @@ class LphApplication(Adw.Application):
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point used by `--gui` and by the desktop entry."""
+    """Entry point used by `--gui` and by the desktop entry.
+
+    The program name is set first and deliberately: GTK sends *that* to the
+    compositor as the window's app id (X11: `WM_CLASS`), not the application
+    id, and left alone it is whatever started the interpreter -- "python3",
+    or "python3.12" from inside the AppImage. The task bar then looks for a
+    desktop entry of that name, finds python's, and draws python's icon next
+    to our window. `core/integrate.py` writes the entry this now matches.
+    """
+    GLib.set_prgname(APP_ID)
+    GLib.set_application_name(paths.APP_TITLE)
     Adw.init()
     return LphApplication().run(argv or [])

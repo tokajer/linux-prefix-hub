@@ -108,20 +108,57 @@ def test_run_defers_to_gearlever(monkeypatch, tmp_path):
 
 # --- the icon ------------------------------------------------------------
 def test_setup_installs_the_icon_into_the_theme(monkeypatch):
-    """The menu entry and the About dialog reference the icon by *name*;
-    without a file in the theme both showed a blank placeholder."""
+    """Everything that shows the icon references it by *name* -- the entry,
+    the About dialog, the tray -- and without a file in the theme each of
+    them showed a blank placeholder. Two names, so both find it."""
     from linux_prefix_hub.core import integrate, paths
     monkeypatch.setattr(integrate, "detect_gearlever", lambda: None)
 
     result = integrate.full_setup(enable_watcher=False)
 
-    assert paths.ICON_FILE.exists()
-    assert paths.ICON_FILE.read_bytes() == paths.ICON_SOURCE.read_bytes()
+    for icon in (paths.ICON_FILE, paths.ICON_FILE_APP_ID):
+        assert icon.exists()
+        assert icon.read_bytes() == paths.ICON_SOURCE.read_bytes()
     assert result["icon"] == str(paths.ICON_FILE)
-    # ...and the name in the entry is the one we just installed.
+    # ...and the name in the entry is one we just installed.
     entry = integrate.DESKTOP_FILE.read_text(encoding="utf-8")
-    assert f"Icon={paths.APP_NAME}\n" in entry
+    assert f"Icon={paths.APP_ID}\n" in entry
     assert paths.ICON_FILE.name == f"{paths.APP_NAME}.png"
+    assert paths.ICON_FILE_APP_ID.name == f"{paths.APP_ID}.png"
+
+
+def test_the_entry_is_named_after_the_window(monkeypatch):
+    """The task bar goes from the open window's app id to the entry of that
+    name -- so the file is called that, and says so again in
+    StartupWMClass. A mismatch is python's icon next to our window."""
+    from linux_prefix_hub.core import integrate, paths
+    monkeypatch.setattr(integrate, "detect_gearlever", lambda: None)
+
+    entry = integrate.install_desktop_entry()
+
+    assert entry is not None and entry.name == f"{paths.APP_ID}.desktop"
+    assert f"StartupWMClass={paths.APP_ID}\n" in entry.read_text(
+        encoding="utf-8")
+    # And it is the id the window itself carries (`gui.app.main` sets it as
+    # the program name; the GUI is not importable in the test venv).
+    source = (paths._PACKAGE_DIR / "gui" / "app.py").read_text(
+        encoding="utf-8")
+    assert "APP_ID = paths.APP_ID" in source
+    assert "GLib.set_prgname(APP_ID)" in source
+
+
+def test_the_entry_replaces_the_one_it_used_to_write(monkeypatch):
+    """Renaming it must not leave two menu items for one app."""
+    from linux_prefix_hub.core import integrate
+    monkeypatch.setattr(integrate, "detect_gearlever", lambda: None)
+    integrate.LEGACY_DESKTOP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    integrate.LEGACY_DESKTOP_FILE.write_text("[Desktop Entry]\n",
+                                             encoding="utf-8")
+
+    integrate.install_desktop_entry()
+
+    assert integrate.DESKTOP_FILE.exists()
+    assert not integrate.LEGACY_DESKTOP_FILE.exists()
 
 
 def test_the_icon_ships_inside_the_package(monkeypatch):

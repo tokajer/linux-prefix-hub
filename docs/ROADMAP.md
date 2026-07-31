@@ -369,8 +369,8 @@ one writer, so it has none of this problem.
 
 ## ✅ Uninstalling (`core/uninstall.py`)
 
-`--uninstall` (with `--keep-settings`), and "Remove Linux Prefix Hub…" in the
-window's menu. The requirement it was written to was "no data loss is key",
+`--uninstall` (with `--keep-settings`), and "Remove Linux Prefix Hub" at the
+bottom of the window's settings page. The requirement it was written to was "no data loss is key",
 and that turned out to decide the whole shape of the module.
 
 **Uninstalling is not "delete some files"**, because two of the things this

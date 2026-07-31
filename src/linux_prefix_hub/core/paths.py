@@ -21,6 +21,15 @@ APP_NAME = "linux-prefix-hub"      # on-disk name (dirs, shims, unit)
 APP_TITLE = "Linux Prefix Hub"     # user-visible name
 PACKAGE = "linux_prefix_hub"       # importable Python package
 
+# What the *window* is called on the desktop. GTK hands the program name to
+# the compositor (Wayland `app_id`, X11 `WM_CLASS`), and the task bar looks
+# for a desktop entry of exactly that name to find out which icon an open
+# window gets. Left alone the program name is the interpreter's -- "python3",
+# or "python3.12" out of the AppImage -- which is the icon the task bar drew.
+# So `gui.app.main` sets this as the program name and the desktop entry is
+# named after it; the two must stay the same string.
+APP_ID = "io.github.tokajer.LinuxPrefixHub"
+
 
 def _xdg(env_var: str, default_rel: str) -> Path:
     val = os.environ.get(env_var)
@@ -47,15 +56,16 @@ DAEMON_SHIM = LOCAL_BIN / f"{APP_NAME}-daemon"     # systemd: watcher
 SYSTEMD_USER_DIR = XDG_CONFIG_HOME / "systemd" / "user"
 WATCHER_UNIT = SYSTEMD_USER_DIR / f"{APP_NAME}-watcher.service"
 
-# The icon. Both the menu entry and the About dialog reference it by *name*
-# (`Icon=linux-prefix-hub`, `application_icon=`), which only resolves once a
-# file sits in the icon theme -- otherwise both show a blank placeholder.
-# It ships inside the package so this works from a pip install, the AppImage
-# and a checkout alike; `integrate.install_icon` copies it into place.
+# The icon. The menu entry, the About dialog and the tray all reference it by
+# *name*, which only resolves once a file sits in the icon theme -- otherwise
+# they show a blank placeholder. It ships inside the package so this works
+# from a pip install, the AppImage and a checkout alike;
+# `integrate.install_icon` copies it into place, under both names.
 _PACKAGE_DIR = Path(__file__).resolve().parent.parent
 ICON_SOURCE = _PACKAGE_DIR / "data" / f"{APP_NAME}.png"
 ICON_DIR = XDG_DATA_HOME / "icons" / "hicolor" / "256x256" / "apps"
-ICON_FILE = ICON_DIR / f"{APP_NAME}.png"
+ICON_FILE = ICON_DIR / f"{APP_NAME}.png"          # tray + About ask for this
+ICON_FILE_APP_ID = ICON_DIR / f"{APP_ID}.png"     # the open window's own name
 
 # --- Files inside CONFIG_DIR --------------------------------------------
 CONFIG_FILE = CONFIG_DIR / "config.json"       # install_dir, language, ...

@@ -272,7 +272,8 @@ linux-prefix-hub --uninstall                  # asks first, shows the plan
 linux-prefix-hub --uninstall --keep-settings  # keep what it learned
 ```
 
-Or **Remove Linux Prefix Hub…** in the window's menu.
+Or in the window: **Settings → Remove Linux Prefix Hub**, at the bottom of the
+page.
 
 This is not just a delete. Anything that was moved into your home folder is
 **moved back into its game first**, and every game that was connected is

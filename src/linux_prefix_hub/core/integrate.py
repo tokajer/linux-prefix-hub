@@ -29,8 +29,14 @@ from pathlib import Path
 
 from . import db, paths
 
-DESKTOP_FILE = (paths.XDG_DATA_HOME / "applications"
-                / f"{paths.APP_NAME}.desktop")
+APPLICATIONS_DIR = paths.XDG_DATA_HOME / "applications"
+# Named after the app id, because that is the name the window carries on the
+# desktop (`paths.APP_ID`): the task bar goes from the open window's app_id to
+# the entry of the same name, and takes the icon from there.
+DESKTOP_FILE = APPLICATIONS_DIR / f"{paths.APP_ID}.desktop"
+# Where it lived while it was named after the on-disk name. Deleted when the
+# current one is written -- two entries would mean two menu items for one app.
+LEGACY_DESKTOP_FILE = APPLICATIONS_DIR / f"{paths.APP_NAME}.desktop"
 
 
 def running_as_appimage() -> str | None:
@@ -187,26 +193,36 @@ def install_systemd_unit(enable: bool = True) -> Path:
 
 
 def install_icon() -> Path | None:
-    """Put the icon where the desktop looks for it by name.
+    """Put the icon where the desktop looks for it, under both its names.
 
-    The menu entry says `Icon=linux-prefix-hub` and the About dialog asks for
-    the same name; neither carries the image itself. Without a file in the
-    icon theme both fall back to a blank placeholder -- which is exactly what
-    the application menu showed. hicolor/256x256/apps is the per-user search
+    Nothing that shows the icon carries the image itself, they all name it:
+    the About dialog and the tray ask for `linux-prefix-hub`, while the
+    desktop entry -- and with it the open window's place in the task bar --
+    goes by the app id. Without a file in the icon theme each of them falls
+    back to a blank placeholder. hicolor/256x256/apps is the per-user search
     path every desktop reads, no cache refresh needed.
     """
     if not paths.ICON_SOURCE.exists():
         return None                    # nothing to install (source layout)
     try:
         paths.ICON_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(paths.ICON_SOURCE, paths.ICON_FILE)
+        for target in (paths.ICON_FILE, paths.ICON_FILE_APP_ID):
+            shutil.copyfile(paths.ICON_SOURCE, target)
     except OSError:
         return None                    # a missing icon must not fail setup
     return paths.ICON_FILE
 
 
 def install_desktop_entry() -> Path | None:
-    """Application-menu entry. Skipped when GearLever manages the app."""
+    """Application-menu entry. Skipped when GearLever manages the app.
+
+    It is also what an *open* window is matched against: the shell reads the
+    window's app id and looks for the entry of that name, which is why the
+    file is called `paths.APP_ID`.desktop and says `StartupWMClass` on top --
+    the second one is how the X11 side (and GNOME's Wayland matching) gets
+    there. Without the match the task bar has no entry to take an icon from
+    and falls back to the interpreter's.
+    """
     if detect_gearlever():
         return None
     appimg = _target_appimage()
@@ -221,10 +237,15 @@ def install_desktop_entry() -> Path | None:
         f"Name={paths.APP_TITLE}\n"
         "Comment=Manage where your games store their data\n"
         f"Exec={exec_line}\n"
-        f"Icon={paths.APP_NAME}\n"
+        f"Icon={paths.APP_ID}\n"
+        f"StartupWMClass={paths.APP_ID}\n"
         "Categories=Game;Utility;\n"
         "Terminal=false\n",
         encoding="utf-8")
+    if LEGACY_DESKTOP_FILE != DESKTOP_FILE:
+        # The entry this one replaces. Left behind it is a second menu item
+        # for the same app, pointing at the same file.
+        LEGACY_DESKTOP_FILE.unlink(missing_ok=True)
     return DESKTOP_FILE
 
 

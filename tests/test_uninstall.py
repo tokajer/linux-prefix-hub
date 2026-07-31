@@ -276,6 +276,21 @@ def test_a_clean_run_removes_everything_we_installed(moved_game, installed,
     assert (saves / "save0.sav").read_text() == "progress"
 
 
+def test_an_older_setups_entry_and_icons_go_too(installed, no_systemd):
+    """The entry was renamed and a second icon name added along the way.
+    Both names are ours, whichever setup put them there."""
+    from linux_prefix_hub.core import integrate, paths, uninstall
+    integrate.install_icon()
+    integrate.LEGACY_DESKTOP_FILE.write_text("[Desktop Entry]\n",
+                                             encoding="utf-8")
+
+    assert uninstall.run()["ok"] is True
+
+    for leftover in (integrate.DESKTOP_FILE, integrate.LEGACY_DESKTOP_FILE,
+                     paths.ICON_FILE, paths.ICON_FILE_APP_ID):
+        assert not leftover.exists()
+
+
 def test_settings_can_be_kept(moved_game, installed):
     from linux_prefix_hub.core import paths, uninstall
     assert uninstall.run(keep_settings=True)["ok"] is True

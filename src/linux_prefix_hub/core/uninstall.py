@@ -115,7 +115,11 @@ def removable_files() -> list[Path]:
     that file and it is the one that removes it (see `plan`).
     """
     files = [paths.WRAPPER_SHIM, paths.HOOK_SHIM, paths.DAEMON_SHIM,
-             paths.WATCHER_UNIT, integrate.DESKTOP_FILE, paths.ICON_FILE]
+             paths.WATCHER_UNIT, integrate.DESKTOP_FILE,
+             # An older setup wrote the entry under the on-disk name and only
+             # one icon; both are ours to take with us either way.
+             integrate.LEGACY_DESKTOP_FILE,
+             paths.ICON_FILE, paths.ICON_FILE_APP_ID]
     if not integrate.detect_gearlever():
         files.append(paths.installed_appimage_path(db.install_dir()))
     return [f for f in files if f.exists() or f.is_symlink()]
