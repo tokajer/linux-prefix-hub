@@ -20,7 +20,7 @@ command).
 | `--scan [--show-hidden]`, `--status` | listing | user |
 | `--connect`, `--disconnect` | adapter hook | user |
 | `--hide`, `--unhide` | `core.db.hide_game` | user |
-| `--lookup` | `core.pcgw.lookup_and_store` | user |
+| `--lookup [--yes]` | `core.pcgw.lookup` + `confirm` | user |
 | `--open` | `core.desktop.open_folder` | user |
 | `--redirect`, `--undo-redirect` | `core.redirect` | user |
 | `--check-update`, `--update` | `core.updater` | user |
@@ -96,6 +96,9 @@ that are never a storage location — `core/snapshot.py` applies them),
 `core/redirect.py` owns what they mean),
 `hidden_games`/`is_hidden`/`hide_game`/`unhide_game` (games the user does not
 want in the lists),
+`confirm_key`/`confirmed_lookups`/`confirmed_locations`/`confirm_locations`/
+`forget_confirmed` (the storage locations the user accepted from a
+PCGamingWiki lookup; `core/pcgw.py` owns what they mean),
 `load_prefixes`/`save_prefixes`, `upsert_prefix`, `get_prefix`, `find_prefix`,
 `resolve` (fingerprint | app id | partial name), `update_location`,
 `prune_locations`, `set_managed`.
@@ -113,9 +116,16 @@ set are never even offered to it.
 `game_key(source, app_id)` is the other identity in this module: the prefix DB
 is keyed by the prefix, which does not exist until the game has run once, so
 everything we want to remember *before* that lives in `config.json` under this
-key instead — a move asked for early (`pending_redirects`) and a game the user
-does not want to see (`hidden_games`). `pending_key` is the same function
-under the name it shipped with.
+key instead — a move asked for early (`pending_redirects`), a game the user
+does not want to see (`hidden_games`), and a lookup's suggestions they said
+yes to (`confirmed_lookups`). `pending_key` is the same function under the
+name it shipped with.
+
+`confirmed_lookups` is there rather than in the lookup's own cache for one
+reason: that cache expires after a month and the next refresh overwrites it,
+and a user decision no rescan may undo cannot live in a file a rescan
+rewrites. `confirm_key` case-folds the path so that an article respelling
+"Documents" as "documents" is not read as something the user has not seen.
 
 Hiding is deliberately shallow: it takes a game out of a list and does nothing
 else. The launch hook stays installed, learned locations stay learned, a
@@ -212,13 +222,47 @@ answer properly instead of guessing from the path.
 
 - `lookup(game, refresh=False) -> {ok, reason, page, url, locations, cached,
   message}` — the whole flow, cache first. Never raises; `message` is already
-  translated, like `redirect`/`updater` results.
-- `lookup_and_store(game)` — the same plus the DB write, adds `stored`.
-- `cached_locations(source, app_id)` — cache only, never expires, never online.
-  **This is the only entry point the launch hook uses.**
-- `parse_game_data(wikitext)` / `expand_path(raw)` — pure, no network, and
-  where the actual work happens.
+  translated, like `redirect`/`updater` results. **Writes nothing** anywhere
+  but the cache: what comes back is a proposal.
+- `on_disk(game, locations) -> (there, not_there)` — the same locations split
+  by whether the folder actually exists, the existing ones respelled the way
+  the disk spells them.
+- `confirm(game, locations) -> {added, waiting, stored}` — the user said yes.
+  Records that in `config.json` and writes the folders that exist into the DB.
+- `cached_locations(game)` — cache only, never expires, never online, and
+  only what is **confirmed and on disk**. **This is the only entry point the
+  launch hook uses.**
+- `parse_game_data(wikitext)` / `expand_path(raw)` / `resolve_dir(root,
+  win_path)` — pure, no network, and where the actual work happens.
 - `enabled()` — config `online_lookup`, default true.
+
+**It suggests, the user decides** (rule 4 in the module). An article is
+written by people and may be about another edition, and what it says lands in
+the list the user then moves data around with — so two gates stand between a
+lookup and the DB, and *both are asked again every time the answer is used*:
+
+- **Confirmed.** `--lookup` prints the proposal and asks (`--yes` answers for
+  a script); the window shows it in a dialog with Cancel/Add. The yes goes
+  into `confirmed_lookups` in config.json keyed by `<source>:<app_id>` — not
+  into the lookup's own cache, which expires after a month and is overwritten
+  by the next refresh. A decision a rescan could undo is exactly what
+  CLAUDE.md rule 1 forbids.
+- **There.** A path the wiki names but the disk does not have is never
+  written, never created, never redirected. Otherwise a storage location gets
+  invented out of an article and the first thing the user does with it is
+  move data into it.
+
+That combination is what keeps "look it up before playing it once" useful:
+the yes is remembered for locations that do not exist yet, and the first
+launch that actually creates one folds it in (`cached_locations`). A folder
+the game never creates is never written anywhere.
+
+**Spelling:** Windows paths are case-insensitive and articles spell them
+freely; the filesystem under Wine is not and does not. `resolve_dir` walks the
+path segment by segment, case-insensitively, and matches `*` (what
+`expand_path` leaves where a profile id was) against what is there. What gets
+stored is the disk's spelling, so the entry a lookup writes and the entry the
+diff writes for the same folder stay *one* entry (`db.location_key`).
 
 **Resolving the article:** a Steam appid is an exact key and goes through their
 Cargo table (`Infobox_game.Steam_AppID`); everything else goes by title, then
@@ -268,10 +312,12 @@ Read-only towards the game except for `redirect.reapply()`, which repairs
 redirections the user already asked for. Every step is guarded so a failure in
 our code cannot stop the game, and the game's exit code is passed through.
 
-`_after()` also folds in `_known_locations()` — what a lookup already found,
-read from `pcgw`'s **cache**, never from the network. It does two jobs: it
-sharpens the type of what the diff saw, and it carries an answer that was
-looked up before the game had a prefix into the DB on the first launch.
+`_after()` also folds in `_known_locations()` — what a lookup found *and the
+user confirmed*, read from `pcgw`'s **cache**, never from the network. It does
+two jobs: it sharpens the type of what the diff saw, and it carries an answer
+that was confirmed before the game had a prefix into the DB on the first
+launch that creates the folder. A suggestion nobody has looked at stays in the
+cache: a launch is not a moment at which one gets promoted quietly.
 
 **Watch out:** `game_env()` undoes what the AppImage did to the environment
 (`BUNDLE_VARS`, `BUNDLE_LISTS`) before the game is started. Without it the
@@ -363,7 +409,8 @@ prefix exists but is *in use* (which is the normal state right after it
 appears — the game is booting); or nothing movable is known about the game
 yet. It returns the roots it moved, and only drops the wish when every one of
 them landed. It also files the game in the DB on the way through, folding in
-whatever `pcgw` has been holding in its cache for want of a prefix to key by.
+whatever `pcgw` has been holding in its cache for want of a prefix to key by —
+confirmed locations only, and only those whose folder now exists.
 
 `movable_roots(entry)` is the shared answer to "which shell folders of this
 game can redirection actually express" — used by `apply_pending` and by
@@ -695,9 +742,10 @@ folder that exists before anything has been learned, so it is shown even when
 there is nothing else to show.
 
 One `Adw.ExpanderRow` per game: a switch that calls the same
-`adapter.connect()` the CLI uses, a search button that calls
-`pcgw.lookup_and_store()` (network, so off the main loop like everything else),
-and one row per learned storage location.
+`adapter.connect()` the CLI uses, a search button that calls `pcgw.lookup()`
+(network, so off the main loop like everything else) and then shows what came
+back in a Cancel/Add dialog (`_propose` → `_accept` → `pcgw.confirm`; nothing
+is stored on the way past), and one row per learned storage location.
 `LocationRow` (a shell folder) carries the switch that calls `core.redirect`;
 `FixedLocationRow` is the read-only twin for everything that cannot be moved —
 the install folder, or a prefix path outside any shell folder. Both carry an

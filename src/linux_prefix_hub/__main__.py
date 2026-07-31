@@ -219,22 +219,65 @@ def _cmd_connect(needle: str, source: str | None, undo: bool) -> int:
     return 0 if result.ok else 1
 
 
-def _cmd_lookup(needle: str, source: str | None) -> int:
-    """Ask PCGamingWiki where a game saves, instead of playing it first."""
+def _ask(question: str) -> bool:
+    """A yes/no question in the terminal. Anything that is not yes is no.
+
+    EOF is not an answer either: a pipe or a service unit has nobody to ask,
+    and silence must not count as agreement. `--yes` is how those say yes.
+    """
+    try:
+        answer = input(question).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in ("y", "yes", "j", "ja")
+
+
+def _location_line(loc: dict[str, Any], here: bool = True) -> str:
+    """One suggested storage location, as a line in the terminal."""
+    line = f"    [{loc.get('type', '?'):<7}] {loc.get('win_path')}"
+    if loc.get("where") == "game_folder":
+        line += " " + _("(in the game's own folder)")
+    return line if here else line + "  " + _("(not there yet)")
+
+
+def _cmd_lookup(needle: str, source: str | None, assume_yes: bool) -> int:
+    """Ask PCGamingWiki where a game saves, instead of playing it first.
+
+    The answer is a suggestion and is shown as one: nothing is written until
+    the user says yes, and even then only the folders that are actually
+    there. See rule 4 in `core/pcgw.py`.
+    """
     from .core import pcgw
     game = _pick_game(needle, source)
     if not game:
         return 1
 
-    result = pcgw.lookup_and_store(game)
+    result = pcgw.lookup(game)
     print(result["message"])
-    for loc in result["locations"]:
-        print(f"    [{loc.get('type', '?'):<7}] {loc.get('win_path')}"
-              + (" " + _("(in the game's own folder)")
-                 if loc.get("where") == "game_folder" else ""))
+    here, not_here = pcgw.on_disk(game, result["locations"])
+    for loc in here:
+        print(_location_line(loc))
+    for loc in not_here:
+        print(_location_line(loc, here=False))
     if result["url"]:
         print("    " + str(result["url"]))
-    if result["locations"] and not result.get("stored"):
+    if not result["locations"]:
+        return 0 if result["ok"] else 1
+
+    if not assume_yes and not _ask(_("Use these storage locations? [y/N] ")):
+        print(_("Nothing was added."))
+        return 0
+
+    outcome = pcgw.confirm(game, result["locations"])
+    if outcome["stored"]:
+        print(_("Added {n} storage location(s).", n=len(outcome["added"])))
+    if outcome["waiting"]:
+        # Confirmed, but there is nothing to point at yet. Not an error and
+        # not a promise -- if the game never writes it, we never write it.
+        print(_("{n} of them do not exist yet. They are added the first time "
+                "the game creates them.", n=len(outcome["waiting"])))
+    elif not outcome["stored"]:
         print(_("Connect the game and start it once -- then these show up "
                 "with it."))
     return 0 if result["ok"] else 1
@@ -618,6 +661,8 @@ def _build_parser() -> Any:
                    help=_("limit to one launcher"))
     p.add_argument("--show-hidden", action="store_true",
                    help=_("list hidden games too"))
+    p.add_argument("--yes", "-y", action="store_true",
+                   help=_("accept what --lookup suggests without asking"))
     p.add_argument("--target", metavar="PATH",
                    help=_("where --redirect should move the files"))
 
@@ -741,7 +786,7 @@ def main() -> int:
     if parsed.disconnect:
         return _cmd_connect(parsed.disconnect, parsed.source, undo=True)
     if parsed.lookup:
-        return _cmd_lookup(parsed.lookup, parsed.source)
+        return _cmd_lookup(parsed.lookup, parsed.source, parsed.yes)
     if parsed.redirect:
         return _cmd_redirect(parsed.redirect, parsed.target, undo=False)
     if parsed.undo_redirect:

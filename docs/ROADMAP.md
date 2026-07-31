@@ -98,12 +98,26 @@ needed no change. `snapshot.classify_locations` now takes those locations as
 `known` and lets them decide `type`, which is the part `_guess_type` could
 only guess at.
 
-The three decisions worth remembering:
+The four decisions worth remembering:
 
 - **It never runs on its own.** The launch hook reads `pcgw`'s cache and never
   the network (`wrapper._known_locations`); the wiki is only asked when the
   user asks. `online_lookup` in `config.json` (a switch in Settings) turns the
   whole thing off for a machine that should stay offline.
+- **It suggests; the user decides, and the disk has the last word.** A lookup
+  writes nothing on its own: `--lookup` prints what came back and asks (`--yes`
+  answers for a script), the window shows it with Cancel/Add, and only
+  `pcgw.confirm()` keeps any of it. What the user accepted goes into
+  `confirmed_lookups` in `config.json` — not into the lookup's own cache,
+  which expires and gets overwritten, and a decision a rescan can undo is the
+  one thing this app must not have. A path the wiki names but the disk does
+  not have (`pcgw.on_disk`) is never written, created or redirected, no matter
+  who confirmed it: an article is written by people and describes Windows, and
+  a storage location invented out of one is a folder the user then moves data
+  into. Both gates are asked again wherever the answer is used, not once when
+  it was given — which is what keeps "look it up before playing it once"
+  useful: the yes waits for a folder that does not exist yet, and the first
+  launch that really creates it folds it in.
 - **Misses are cached, unreachable is not.** "No article" is about the game and
   holds for a day; "no network" is about us and must not strand the user for a
   month.

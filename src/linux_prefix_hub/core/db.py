@@ -284,6 +284,65 @@ def location_key(loc: dict[str, Any]) -> tuple[str, str]:
     return (str(loc.get("where") or "prefix"), str(loc.get("win_path", "")))
 
 
+# --- Suggestions the user has said yes to --------------------------------
+# A PCGamingWiki lookup proposes storage locations; it never decides. What
+# the user accepted is remembered here and not in that lookup's own cache,
+# because the cache expires after a month and the next refresh overwrites it
+# -- a decision no rescan may undo cannot live in a file that is rewritten by
+# one. Keyed by `game_key` like everything else a game can own before it has
+# a prefix.
+def confirm_key(loc: dict[str, Any]) -> tuple[str, str]:
+    """`location_key`, case-folded and with one kind of slash.
+
+    The wiki respells its paths -- "Documents" today, "documents" after
+    somebody tidied the article. That is not a different folder and must not
+    read as a suggestion the user has not seen yet.
+    """
+    where, win_path = location_key(loc)
+    return where, win_path.replace("\\", "/").strip("/").lower()
+
+
+def confirmed_lookups() -> dict[str, list[list[str]]]:
+    """Every accepted suggestion, keyed by `game_key`."""
+    value = load_config().get("confirmed_lookups")
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): [[str(part) for part in pair]
+                       for pair in pairs if isinstance(pair, list)]
+            for key, pairs in value.items() if isinstance(pairs, list)}
+
+
+def confirmed_locations(source: str, app_id: str) -> set[tuple[str, str]]:
+    """The `confirm_key`s the user accepted for one game."""
+    stored = confirmed_lookups().get(game_key(source, app_id), [])
+    return {(pair[0], pair[1]) for pair in stored if len(pair) >= 2}
+
+
+def confirm_locations(source: str, app_id: str,
+                      locations: list[dict[str, Any]]) -> int:
+    """Remember that the user accepted these. Returns how many are on file.
+
+    Additive: a second lookup that finds one more location does not withdraw
+    the yes given to the first.
+    """
+    accepted = confirmed_locations(source, app_id)
+    accepted |= {confirm_key(loc) for loc in locations}
+    everything = confirmed_lookups()
+    everything[game_key(source, app_id)] = [list(key)
+                                            for key in sorted(accepted)]
+    set_config("confirmed_lookups", everything)
+    return len(accepted)
+
+
+def forget_confirmed(source: str, app_id: str) -> bool:
+    """Withdraw the yes for one game. False if there was none."""
+    everything = confirmed_lookups()
+    if everything.pop(game_key(source, app_id), None) is None:
+        return False
+    set_config("confirmed_lookups", everything)
+    return True
+
+
 # --- Prefix DB -----------------------------------------------------------
 # SQLite, because this file has three writers. The launch wrapper, the
 # watcher and the window all reach for it, two of them can land in the same

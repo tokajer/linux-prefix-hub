@@ -414,16 +414,17 @@ def is_requested(game: dict[str, Any]) -> bool:
 
 
 def _cached_locations(game: dict[str, Any]) -> list[dict[str, Any]]:
-    """What a PCGamingWiki lookup already found, from its cache alone.
+    """What the user accepted from a lookup, from its cache alone.
 
     That answer may have been sitting there for weeks: a lookup before the
     first launch has no prefix to be keyed by, so it waits in the cache until
-    something can file it. This is that something.
+    something can file it. This is that something -- for the locations the
+    user confirmed and that the game has meanwhile created, which is all
+    `pcgw.cached_locations` ever hands out.
     """
     try:
         from . import pcgw
-        return pcgw.cached_locations(str(game.get("source", "")),
-                                     str(game.get("app_id", "")))
+        return pcgw.cached_locations(game)
     except Exception:
         return []
 

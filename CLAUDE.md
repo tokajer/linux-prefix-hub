@@ -40,7 +40,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `core/i18n.py` | `_()`; English source strings, `locales/de.json` catalog, `LPH_LANG` > config > `LANG` |
 | `core/db.py` | `config.json` (JSON) + `prefixes.db` (**SQLite**, three writers). `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS`; `prune_locations` drops what a filter should have caught, never a user's. Columns for what we query, `extra` JSON for the rest; a pre-SQLite `prefixes.json` is folded in once. Anything a game can own **before it has a prefix** (`pending_redirects`, `hidden_games`) lives in the config, keyed by `game_key` = `source:app_id` |
 | `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); the `IGNORE_*` filters (shader caches, logs, …) plus the user's own; pending snapshots for the 2-process hook flow |
-| `core/pcgw.py` | PCGamingWiki lookup: article → `{{Game data/…}}` → our locations. Optional, cached, **never on the launch path** (the wrapper reads the cache only) |
+| `core/pcgw.py` | PCGamingWiki lookup: article → `{{Game data/…}}` → our locations. Optional, cached, **never on the launch path** (the wrapper reads the cache only). It **suggests**: `lookup()` writes nothing, `confirm()` is the user's yes, `on_disk()` drops what is not there |
 | `core/desktop.py` | Hand a folder to the user's file manager. `xdg-open` first |
 | `core/wrapper.py` | The launch hook, both shapes (wrap and pre/post). Must never break a launch |
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
@@ -112,6 +112,17 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
     CLI branches.
 11. Things that need real hardware are marked `VERIFY-ON-DEVICE` in the code
     and collected in the README.
+12. **A PCGamingWiki lookup suggests; the user decides, and the disk has the
+    last word.** `pcgw.lookup()` writes nothing but its cache. Only
+    `pcgw.confirm()` — behind the prompt in `--lookup` and the Add button in
+    the window — turns a suggestion into something we keep, and only
+    `pcgw.on_disk()` decides which of them are real. Both gates are asked
+    again wherever the answer is used (`pcgw.cached_locations`, so the
+    wrapper and `redirect.apply_pending` too), never once when it was given:
+    a yes is permission, not proof. A path the wiki names and the disk does
+    not have is never written, created or redirected — otherwise a storage
+    location is invented out of an article and the first thing the user does
+    with it is move data into it.
 
 ## Adding a launcher
 
@@ -130,7 +141,7 @@ table, not the file's absence, is what says the import happened),
 (`config.json` keys: `install_dir`, `redirect_root`, `language`,
 `online_lookup`, `game_folders`, `ignore_paths`, `setup_done`,
 `background_tray`, `pending_redirects`, `hidden_games`,
-`update_check`/`update_notified`),
+`confirmed_lookups`, `update_check`/`update_notified`),
 `~/.local/share/linux-prefix-hub/LinuxPrefixHub.AppImage`,
 `~/.local/bin/linux-prefix-hub-{wrapper,hook,daemon}`,
 `~/.config/systemd/user/linux-prefix-hub-watcher.service`.

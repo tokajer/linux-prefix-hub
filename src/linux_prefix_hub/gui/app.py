@@ -245,7 +245,12 @@ class GameRow(Adw.ExpanderRow):
 
         def work() -> Any:
             from ..core import pcgw
-            return pcgw.lookup_and_store(game)
+            result = pcgw.lookup(game)
+            # Checking the disk is disk work too, so it happens here rather
+            # than in `done`, which runs on the main loop.
+            result["here"], result["waiting"] = pcgw.on_disk(
+                game, result["locations"])
+            return result
 
         def done(result: Any, error: Exception | None) -> None:
             self._lookup.set_sensitive(True)
@@ -253,15 +258,78 @@ class GameRow(Adw.ExpanderRow):
                 self._window.toast(_("Something went wrong: {error}",
                                      error=str(error)))
                 return
-            message = str(result["message"])
-            if result["locations"] and not result.get("stored"):
-                # Known, but nowhere to keep it yet: the DB is keyed by the
-                # game folder, which only exists once the game has run.
-                message += " " + _("Start the game once -- then they show "
-                                   "up here.")
-            self._window.toast(message)
-            if result.get("stored"):
+            if not result["locations"]:
+                self._window.toast(str(result["message"]))
+                return
+            self._propose(result)
+
+        tasks.run(work, done)
+
+    def _propose(self, result: dict[str, Any]) -> None:
+        """Show what the wiki suggests and ask before keeping any of it.
+
+        A lookup is a proposal, not a finding: the article is written by
+        people, it may describe a different edition, and what it says ends up
+        in the very list the user then moves data around with. So it is shown
+        first and stored on "Add" -- never on the way past.
+
+        Folders that are not there are listed too, marked rather than hidden.
+        "The wiki says this and your copy has not written it yet" is worth
+        knowing, and it explains why fewer rows appear afterwards than lines
+        were shown.
+        """
+        from ..core import pcgw
+        lines = [_("{site} suggests these storage locations:",
+                   site=pcgw.SITE_NAME), ""]
+        lines += [str(loc.get("win_path")) for loc in result["here"]]
+        lines += [_("{path} -- not there yet", path=str(loc.get("win_path")))
+                  for loc in result["waiting"]]
+        if result.get("url"):
+            lines += ["", str(result["url"])]
+
+        dialog = Adw.AlertDialog(heading=esc(self._name),
+                                 body=esc("\n".join(lines)))
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("add", _("Add"))
+        dialog.set_response_appearance("add",
+                                       Adw.ResponseAppearance.SUGGESTED)
+        # Cancel is the default and the close response: a dialog dismissed
+        # with Escape has not agreed to anything.
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(_d: Any, response: str) -> None:
+            if response == "add":
+                self._accept(list(result["locations"]))
+
+        dialog.connect("response", on_response)
+        dialog.present(self._window)
+
+    def _accept(self, locations: list[dict[str, Any]]) -> None:
+        """Keep what was proposed: config write plus DB write, off the loop."""
+        game = dict(self._game)
+
+        def work() -> Any:
+            from ..core import pcgw
+            return pcgw.confirm(game, locations)
+
+        def done(outcome: Any, error: Exception | None) -> None:
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            if outcome["stored"]:
                 self._fill_locations()
+                message = _("Added {n} storage location(s).",
+                            n=len(outcome["added"]))
+            else:
+                # Nothing to key the DB on yet, or nothing that exists to
+                # write into it -- the yes is kept either way.
+                message = _("Start the game once -- then they show up here.")
+            if outcome["waiting"]:
+                message += " " + _("{n} of them do not exist yet.",
+                                   n=len(outcome["waiting"]))
+            self._window.toast(message)
 
         tasks.run(work, done)
 

@@ -427,6 +427,78 @@ def test_set_language_is_remembered(monkeypatch, capsys):
     assert "Noch nichts gelernt" in capsys.readouterr().out
 
 
+# --- --lookup asks before it keeps anything ------------------------------
+def _one_game_with_saves(monkeypatch, fake_prefix):
+    """One Steam game whose Documents folder is on disk, plus one wiki hit."""
+    from linux_prefix_hub.adapters import base
+    from linux_prefix_hub.core import pcgw
+    saves = fake_prefix / "drive_c/users/steamuser/Documents/My Games/Quake"
+    saves.mkdir(parents=True)
+    game = {"source": "steam", "app_id": "2310", "game_name": "Quake",
+            "installed": True, "prefix_path": str(fake_prefix),
+            "user_dir": "steamuser", "game_dir": None}
+    monkeypatch.setattr(base, "iter_games",
+                        lambda sources=None: iter([dict(game)]))
+    monkeypatch.setattr(pcgw, "lookup", lambda g, refresh=False: {
+        "ok": True, "reason": "", "page": "Quake", "url": None,
+        "cached": False, "message": "PCGamingWiki knows 2 location(s).",
+        "locations": [
+            {"type": "saves", "where": "prefix", "file_count": 0,
+             "win_path": "Documents/My Games/Quake"},
+            {"type": "config", "where": "prefix", "file_count": 0,
+             "win_path": "AppData/Roaming/Quake"}]})
+    return game
+
+
+def test_lookup_keeps_nothing_until_it_is_answered(monkeypatch, capsys,
+                                                   fake_prefix):
+    """The suggestion is shown, the answer is no, the DB stays empty."""
+    from linux_prefix_hub.core import db
+    _one_game_with_saves(monkeypatch, fake_prefix)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    assert _run(monkeypatch, "--lookup", "Quake") == 0
+    out = capsys.readouterr().out
+    assert "Documents/My Games/Quake" in out
+    assert "(not there yet)" in out            # the AppData one
+    assert "Nothing was added." in out
+    assert db.load_prefixes() == {}
+    assert db.confirmed_lookups() == {}
+
+
+def test_lookup_keeps_what_was_confirmed(monkeypatch, capsys, fake_prefix):
+    from linux_prefix_hub.core import db
+    _one_game_with_saves(monkeypatch, fake_prefix)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    assert _run(monkeypatch, "--lookup", "Quake") == 0
+    out = capsys.readouterr().out
+    assert "Added 1 storage location(s)." in out
+    assert "1 of them do not exist yet" in out
+
+    found = db.find_prefix("steam", "2310")
+    assert [loc["win_path"] for loc in found[1]["storage_locations"]] == [
+        "Documents/My Games/Quake"]
+
+
+def test_a_pipe_is_not_a_yes(monkeypatch, capsys, fake_prefix):
+    """No terminal to ask means no, not "go ahead" -- `--yes` is the yes."""
+    from linux_prefix_hub.core import db
+
+    def no_terminal(_prompt):
+        raise EOFError
+
+    _one_game_with_saves(monkeypatch, fake_prefix)
+    monkeypatch.setattr("builtins.input", no_terminal)
+    assert _run(monkeypatch, "--lookup", "Quake") == 0
+    assert "Nothing was added." in capsys.readouterr().out
+    assert db.load_prefixes() == {}
+
+    assert _run(monkeypatch, "--lookup", "Quake", "--yes") == 0
+    assert "Added 1 storage location(s)." in capsys.readouterr().out
+    assert db.find_prefix("steam", "2310") is not None
+
+
 def test_unknown_game_for_redirect(monkeypatch, capsys):
     """A name that is no game at all says so -- it is not a pending wish.
 

@@ -50,6 +50,13 @@ CYBERPUNK = """
 }}
 """
 
+# The same article after somebody "tidied" its capitalisation.
+CYBERPUNK_SHOUTED = """
+{{Game data|
+{{Game data/saves|Windows|{{p|userprofile}}\\saved games\\CD PROJEKT RED\\cyberpunk 2077}}
+}}
+"""
+
 
 def locations(wikitext):
     from linux_prefix_hub.core import pcgw
@@ -291,11 +298,25 @@ def test_switched_off_means_no_call_at_all(monkeypatch):
     assert calls == []
 
 
-def test_a_stale_cache_expires_but_stays_readable(monkeypatch):
-    from linux_prefix_hub.core import paths, pcgw
+def _cyberpunk(fake_prefix, folders=("Saved Games/CD Projekt Red/"
+                                     "Cyberpunk 2077",)):
+    """The game as the wiki's two locations would find it on disk."""
+    users = fake_prefix / "drive_c" / "users" / "steamuser"
+    for folder in folders:
+        (users / folder).mkdir(parents=True, exist_ok=True)
+    return {"source": "steam", "app_id": "1091500",
+            "game_name": "Cyberpunk 2077", "prefix_path": str(fake_prefix),
+            "user_dir": "steamuser", "game_dir": None}
+
+
+def test_a_stale_cache_expires_but_stays_readable(monkeypatch, fake_prefix):
+    from linux_prefix_hub.core import db, paths, pcgw
     _wire(monkeypatch)
-    pcgw.lookup({"source": "steam", "app_id": "1091500",
-                 "game_name": "Cyberpunk 2077"})
+    game = _cyberpunk(fake_prefix,
+                      ("Saved Games/CD Projekt Red/Cyberpunk 2077",
+                       "AppData/Local/CD Projekt Red/Cyberpunk 2077"))
+    result = pcgw.lookup(game)
+    db.confirm_locations("steam", "1091500", result["locations"])
 
     path = paths.pcgw_cache_file(pcgw.cache_key("steam", "1091500"))
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -304,45 +325,113 @@ def test_a_stale_cache_expires_but_stays_readable(monkeypatch):
 
     assert pcgw.load_cached("steam", "1091500") is None
     # The launch hook has no way to refresh it, so for that path it stands.
-    assert len(pcgw.cached_locations("steam", "1091500")) == 2
+    assert len(pcgw.cached_locations(game)) == 2
 
 
-def test_lookup_and_store_writes_into_the_db(monkeypatch, fake_prefix):
+def test_confirming_writes_into_the_db(monkeypatch, fake_prefix):
     from linux_prefix_hub.core import db, pcgw
     _wire(monkeypatch)
-    game = {"source": "steam", "app_id": "1091500",
-            "game_name": "Cyberpunk 2077", "prefix_path": str(fake_prefix),
-            "user_dir": "steamuser", "game_dir": None}
+    game = _cyberpunk(fake_prefix)
 
-    result = pcgw.lookup_and_store(game)
-    assert result["stored"] is True
+    result = pcgw.lookup(game)
+    assert db.load_prefixes() == {}           # a lookup alone writes nothing
+
+    outcome = pcgw.confirm(game, result["locations"])
+    assert outcome["stored"] is True
 
     found = db.find_prefix("steam", "1091500")
     assert found is not None
     paths_in_db = {loc["win_path"]
                    for loc in found[1]["storage_locations"]}
-    assert "Saved Games/CD Projekt Red/Cyberpunk 2077" in paths_in_db
+    # Only the folder that is actually there; the config one is not.
+    assert paths_in_db == {"Saved Games/CD Projekt Red/Cyberpunk 2077"}
+    assert [loc["win_path"] for loc in outcome["waiting"]] == [
+        "AppData/Local/CD Projekt Red/Cyberpunk 2077"]
     assert found[1]["managed"] is False       # a lookup connects nothing
+
+
+def test_nothing_is_written_before_the_user_says_yes(monkeypatch,
+                                                     fake_prefix):
+    from linux_prefix_hub.core import db, pcgw
+    _wire(monkeypatch)
+    game = _cyberpunk(fake_prefix)
+
+    result = pcgw.lookup(game)
+    assert len(result["locations"]) == 2      # the wiki knows them
+
+    assert db.load_prefixes() == {}           # ...and we act on none of it
+    assert db.confirmed_lookups() == {}
+    assert pcgw.cached_locations(game) == []
+
+
+def test_a_folder_that_is_not_there_is_never_stored(monkeypatch,
+                                                    fake_prefix):
+    """Confirmed, but nothing on disk answers to it -- so nothing happens."""
+    from linux_prefix_hub.core import db, pcgw
+    _wire(monkeypatch)
+    game = _cyberpunk(fake_prefix, folders=())
+
+    outcome = pcgw.confirm(game, pcgw.lookup(game)["locations"])
+    assert outcome["stored"] is False and outcome["added"] == []
+    assert len(outcome["waiting"]) == 2
+    assert db.load_prefixes() == {}
+    # The yes is on file though: it is the folders that are missing.
+    assert len(db.confirmed_locations("steam", "1091500")) == 2
+
+
+def test_the_disk_spelling_wins_over_the_wikis(monkeypatch, fake_prefix):
+    """Windows does not care about case, the filesystem under Wine does.
+
+    Stored as the disk spells it, so the entry the diff writes for the same
+    folder and the entry a lookup writes are one entry, not two.
+    """
+    from linux_prefix_hub.core import db, pcgw
+    _wire(monkeypatch, wikitext=CYBERPUNK_SHOUTED)
+    game = _cyberpunk(fake_prefix)
+
+    pcgw.confirm(game, pcgw.lookup(game)["locations"])
+    found = db.find_prefix("steam", "1091500")
+    assert [loc["win_path"] for loc in found[1]["storage_locations"]] == [
+        "Saved Games/CD Projekt Red/Cyberpunk 2077"]
+
+
+def test_a_wildcard_matches_the_folder_that_is_there(fake_prefix):
+    """`{{p|uid}}` becomes `*`, which has to be matched, not looked up."""
+    from linux_prefix_hub.core import pcgw
+    users = fake_prefix / "drive_c/users/steamuser"
+    (users / "AppData/Roaming/Game/Profiles/7739201").mkdir(parents=True)
+    game = {"source": "generic", "app_id": "x", "prefix_path":
+            str(fake_prefix), "user_dir": "steamuser"}
+
+    there, missing = pcgw.on_disk(game, [
+        {"where": "prefix", "win_path": "AppData/Roaming/Game/Profiles/*"},
+        {"where": "prefix", "win_path": "AppData/Roaming/Other/*"}])
+    assert [loc["win_path"] for loc in there] == [
+        "AppData/Roaming/Game/Profiles/7739201"]
+    assert len(missing) == 1
 
 
 def test_a_game_without_a_folder_is_cached_but_not_stored(monkeypatch):
     """Never started: the DB is keyed by the game folder, so there is none."""
     from linux_prefix_hub.core import db, pcgw
     _wire(monkeypatch)
-    result = pcgw.lookup_and_store({"source": "steam", "app_id": "1091500",
-                                    "game_name": "Cyberpunk 2077",
-                                    "prefix_path": None, "user_dir": None})
-    assert result["locations"] and result["stored"] is False
+    game = {"source": "steam", "app_id": "1091500",
+            "game_name": "Cyberpunk 2077", "prefix_path": None,
+            "user_dir": None}
+    result = pcgw.lookup(game)
+    outcome = pcgw.confirm(game, result["locations"])
+
+    assert result["locations"] and outcome["stored"] is False
     assert db.load_prefixes() == {}
-    assert pcgw.cached_locations("steam", "1091500")
+    # Nothing exists to point at yet, so the yes waits with the answer.
+    assert len(outcome["waiting"]) == 2
+    assert db.confirmed_locations("steam", "1091500")
 
 
 def test_a_lookup_does_not_reset_a_user_decision(monkeypatch, fake_prefix):
     from linux_prefix_hub.core import db, pcgw
     _wire(monkeypatch)
-    game = {"source": "steam", "app_id": "1091500",
-            "game_name": "Cyberpunk 2077", "prefix_path": str(fake_prefix),
-            "user_dir": "steamuser"}
+    game = _cyberpunk(fake_prefix)
     fingerprint = db.upsert_prefix({
         **game, "managed": True,
         "storage_locations": [{
@@ -350,7 +439,7 @@ def test_a_lookup_does_not_reset_a_user_decision(monkeypatch, fake_prefix):
             "win_path": "Saved Games/CD Projekt Red/Cyberpunk 2077",
             "redirected": True, "redirect_target": "/home/me/Games/CP"}]})
 
-    pcgw.lookup_and_store(game)
+    pcgw.confirm(game, pcgw.lookup(game)["locations"])
     entry = db.get_prefix(fingerprint)
     assert entry["managed"] is True
     moved = [loc for loc in entry["storage_locations"]
@@ -391,17 +480,25 @@ def test_the_spaces_stay_separate():
     assert locs[0]["type"] != "saves"         # same path, other namespace
 
 
-def test_the_hook_adds_what_was_looked_up_before(monkeypatch, fake_prefix,
+def test_the_hook_adds_what_was_confirmed_before(monkeypatch, fake_prefix,
                                                  tmp_path):
-    """Looked up while the game had no folder yet -> stored on first launch."""
+    """Confirmed while the game had no folder yet -> stored on first launch.
+
+    The folder only exists after that first session, which is exactly the
+    case a lookup before the first launch is for: the yes waits, the write
+    happens the moment there is something to write about.
+    """
     from linux_prefix_hub.core import db, pcgw, wrapper
     _wire(monkeypatch)
     game = {"source": "steam", "app_id": "1091500",
             "game_name": "Cyberpunk 2077"}
-    pcgw.lookup_and_store(game)               # cached only, no prefix yet
+    outcome = pcgw.confirm(game, pcgw.lookup(game)["locations"])
+    assert outcome["stored"] is False         # cached only, no prefix yet
 
-    ctx = {**game, "prefix_path": str(fake_prefix), "user_dir": "steamuser",
-           "game_dir": None}
+    ctx = _cyberpunk(fake_prefix, ("Saved Games/CD Projekt Red/"
+                                   "Cyberpunk 2077",
+                                   "AppData/Local/CD Projekt Red/"
+                                   "Cyberpunk 2077"))
     fingerprint, before = wrapper._before(ctx)
     wrapper._after(ctx, before)               # nothing changed on disk
 
@@ -409,6 +506,21 @@ def test_the_hook_adds_what_was_looked_up_before(monkeypatch, fake_prefix,
     assert {loc["win_path"] for loc in entry["storage_locations"]} == {
         "AppData/Local/CD Projekt Red/Cyberpunk 2077",
         "Saved Games/CD Projekt Red/Cyberpunk 2077"}
+
+
+def test_the_hook_ignores_a_lookup_nobody_confirmed(monkeypatch,
+                                                    fake_prefix):
+    """The launch path is not where a suggestion gets promoted quietly."""
+    from linux_prefix_hub.core import db, pcgw, wrapper
+    _wire(monkeypatch)
+    ctx = _cyberpunk(fake_prefix)
+    pcgw.lookup(ctx)                          # asked, never confirmed
+
+    fingerprint, before = wrapper._before(ctx)
+    wrapper._after(ctx, before)
+
+    entry = db.get_prefix(fingerprint)
+    assert entry["storage_locations"] == []
 
 
 def test_the_hook_never_goes_online(monkeypatch, fake_prefix):

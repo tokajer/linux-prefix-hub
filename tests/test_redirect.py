@@ -346,15 +346,26 @@ def test_a_wish_survives_a_game_that_has_told_us_nothing(fake_prefix):
     assert redirect.is_requested(game)
 
 
-def test_a_lookup_waiting_in_the_cache_is_folded_in(fake_prefix,
-                                                    isolated_home):
+def _cached_lookup(prefix, on_disk=True):
+    """A confirmed PCGamingWiki answer waiting in the cache for this game."""
+    from linux_prefix_hub.core import pcgw
+    location = {"type": "saves", "where": "prefix",
+                "win_path": "Documents/My Games/Quake",
+                "detected_by": "pcgamingwiki"}
+    pcgw.store_cached("steam", "2310", {"reason": "", "page": "Quake",
+                                        "locations": [location]})
+    if on_disk:
+        (prefix / "drive_c/users/steamuser/Documents/My Games/Quake").mkdir(
+            parents=True, exist_ok=True)
+    return location
+
+
+def test_a_confirmed_lookup_waiting_in_the_cache_is_folded_in(fake_prefix,
+                                                              isolated_home):
     """The answer PCGamingWiki gave before there was a prefix to file it by."""
-    from linux_prefix_hub.core import db, pcgw, redirect
-    pcgw.store_cached("steam", "2310", {
-        "reason": "", "page": "Quake", "locations": [
-            {"type": "saves", "where": "prefix",
-             "win_path": "Documents/My Games/Quake",
-             "detected_by": "pcgamingwiki"}]})
+    from linux_prefix_hub.core import db, redirect
+    location = _cached_lookup(fake_prefix)
+    db.confirm_locations("steam", "2310", [location])
 
     game = _started(fake_prefix)
     redirect.request(game)
@@ -363,6 +374,38 @@ def test_a_lookup_waiting_in_the_cache_is_folded_in(fake_prefix,
     entry = db.find_prefix("steam", "2310")
     assert entry is not None
     assert entry[1]["storage_locations"][0]["detected_by"] == "pcgamingwiki"
+
+
+def test_a_lookup_nobody_confirmed_moves_nothing(fake_prefix, isolated_home):
+    """A suggestion is not a decision -- least of all one that moves files."""
+    from linux_prefix_hub.core import db, redirect
+    _cached_lookup(fake_prefix)
+
+    game = _started(fake_prefix)
+    redirect.request(game)
+
+    assert redirect.apply_pending(game) == []
+    assert redirect.is_requested(game)            # the wish is still open
+    entry = db.find_prefix("steam", "2310")
+    assert entry is not None and not entry[1]["storage_locations"]
+
+
+def test_a_confirmed_folder_that_is_not_there_moves_nothing(fake_prefix,
+                                                            isolated_home):
+    """Confirmed, but the game never wrote it: there is nothing to move."""
+    from linux_prefix_hub.core import db, redirect
+    location = _cached_lookup(fake_prefix, on_disk=False)
+    db.confirm_locations("steam", "2310", [location])
+
+    game = _started(fake_prefix)
+    redirect.request(game)
+
+    assert redirect.apply_pending(game) == []
+    entry = db.find_prefix("steam", "2310")
+    assert entry is not None and not entry[1]["storage_locations"]
+    # And nothing was conjured up on disk to make it true either.
+    assert not (fake_prefix / "drive_c/users/steamuser/Documents/My "
+                "Games").exists()
 
 
 def test_movable_roots_skips_what_cannot_be_moved():

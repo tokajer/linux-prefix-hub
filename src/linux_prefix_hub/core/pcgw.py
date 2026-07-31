@@ -8,7 +8,7 @@ been played once. PCGamingWiki already knows, for thousands of games, so a
 lookup answers the same question before the first launch -- and answers the
 `type` (saves vs config) properly instead of guessing it from the path.
 
-Three rules this module lives by:
+Four rules this module lives by:
 
 1. **Optional.** It is a network dependency. Nothing here is required and
    nothing here raises: no network, no article, a redesigned wiki -- every
@@ -21,6 +21,16 @@ Three rules this module lives by:
 3. **Cached on disk**, one small JSON per game: hits for a month, misses for
    a day. The wiki is a slow-moving source and we are a guest on someone
    else's server.
+4. **It suggests, the user decides.** An article is written by people, may
+   describe another edition, and what it says lands in the list the user then
+   moves data around with -- so nothing from here reaches the DB until the
+   user has seen it and said yes (`confirm`), and nothing reaches it at all
+   while the folder it names is not on disk (`on_disk`). Both gates are asked
+   again every time the answer is used, not once when it was given: a yes is
+   permission, not proof, and a folder that was missing in March exists in
+   April. A path that is not there is not written, not created and not
+   redirected -- we would otherwise invent a storage location out of an
+   article, and the first thing the user does with it is move data into it.
 
 What we read is the `{{Game data/saves|...}}` and `{{Game data/config|...}}`
 rows of the article's wikitext. That is wiki markup written by people, not an
@@ -42,10 +52,12 @@ paths would otherwise pass for a Windows game's install folder.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from .. import __version__
@@ -268,6 +280,93 @@ def parse_game_data(wikitext: str) -> list[dict[str, Any]]:
     return locations
 
 
+# --- Is that folder actually there? --------------------------------------
+def space_root(game: dict[str, Any], where: str) -> Path | None:
+    """The folder a location's `win_path` is counted from, or None.
+
+    None means the space itself is not there: a game nobody has started has
+    no prefix, a hand-made setup has no known install folder. Nothing in it
+    can exist, which is the honest answer rather than a missing one.
+    """
+    if where == WHERE_GAME:
+        game_dir = game.get("game_dir")
+        return Path(str(game_dir)) if game_dir else None
+    prefix, user_dir = game.get("prefix_path"), game.get("user_dir")
+    if not prefix or not user_dir:
+        return None
+    return Path(str(prefix)) / "drive_c" / "users" / str(user_dir)
+
+
+def _child(parent: Path, segment: str) -> Path | None:
+    """The subfolder `segment` names in `parent`, however it is spelled."""
+    try:
+        entries = sorted(p for p in parent.iterdir() if p.is_dir())
+    except OSError:
+        return None
+    wanted = segment.lower()
+    for path in entries:
+        if path.name.lower() == wanted:
+            return path
+    if any(char in segment for char in "*?["):
+        for path in entries:
+            if fnmatch.fnmatch(path.name.lower(), wanted):
+                return path
+    return None
+
+
+def resolve_dir(root: Path, win_path: str) -> Path | None:
+    """`win_path` under `root`, spelled the way the disk spells it.
+
+    Two things stand between the wiki's string and a real folder. Windows
+    paths are case-insensitive and an article spells them however its editor
+    felt like ("documents\\My Games"), while the filesystem underneath is not
+    and does not. And a `*` is standing in for something we could not resolve
+    (`expand_path`: a profile id), so it has to be matched against what is
+    there rather than looked up.
+
+    Returns None when no such folder exists -- which is the whole point of
+    asking.
+    """
+    if not root.is_dir():
+        return None
+    current = root
+    for segment in win_path.replace("\\", "/").split("/"):
+        if not segment.strip():
+            continue
+        found = _child(current, segment.strip())
+        if found is None:
+            return None
+        current = found
+    return current
+
+
+def on_disk(game: dict[str, Any], locations: list[dict[str, Any]]
+            ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split suggestions into (there, not there).
+
+    The ones that are there come back spelled as the disk spells them, so
+    that a folder the diff also finds stays *one* entry and not two
+    (`db.location_key`). The ones that are not are handed back too rather
+    than dropped: "the wiki says this and your copy has not written it yet"
+    is worth showing, and it is the difference between a game that keeps its
+    saves elsewhere and one that has simply never been played.
+    """
+    there: list[dict[str, Any]] = []
+    not_there: list[dict[str, Any]] = []
+    for loc in locations:
+        where = str(loc.get("where") or WHERE_PREFIX)
+        root = space_root(game, where)
+        found = (resolve_dir(root, str(loc.get("win_path", "")))
+                 if root is not None else None)
+        if found is None:
+            not_there.append(dict(loc))
+            continue
+        entry = dict(loc)
+        entry["win_path"] = str(found.relative_to(root))
+        there.append(entry)
+    return there, not_there
+
+
 # --- Talking to the wiki -------------------------------------------------
 def ssl_context() -> Any:
     """A verifying TLS context, with the host's CA store if ours is empty.
@@ -460,15 +559,32 @@ def store_cached(source: str, app_id: str, result: dict[str, Any]) -> None:
         pass          # a cache we cannot write is a slow app, not a broken one
 
 
-def cached_locations(source: str, app_id: str) -> list[dict[str, Any]]:
-    """What we already know about this game, from the cache alone.
+def cached_locations(game: dict[str, Any]) -> list[dict[str, Any]]:
+    """What we may act on for this game, from the cache alone.
 
-    This is the entry point the launch hook uses. It never goes online and
-    never expires anything: the alternative to a stale answer there is no
-    answer at all.
+    The entry point the launch hook and `redirect._register` use. It never
+    goes online and never expires anything -- the alternative to a stale
+    answer there is no answer at all -- but it does ask both gates of rule 4
+    again, every time:
+
+    * **Confirmed.** Only what the user accepted (`db.confirmed_locations`).
+      An article nobody has looked at stays in the cache and goes nowhere.
+    * **There.** Only folders that exist right now, spelled as on disk. This
+      is what makes a yes given before the first launch useful without being
+      a promise: the accepted locations are folded in on the first launch
+      that actually creates them, and one the game never creates is never
+      invented.
     """
+    source = str(game.get("source", ""))
+    app_id = str(game.get("app_id", ""))
+    accepted = db.confirmed_locations(source, app_id)
+    if not accepted:
+        return []
     cached = load_cached(source, app_id, fresh_only=False)
-    return [dict(loc) for loc in cached["locations"]] if cached else []
+    wanted = [dict(loc) for loc in (cached["locations"] if cached else [])
+              if db.confirm_key(loc) in accepted]
+    there, _not_there = on_disk(game, wanted)
+    return there
 
 
 # --- The lookup itself ---------------------------------------------------
@@ -536,6 +652,10 @@ def store(game: dict[str, Any],
     None when the game has no prefix yet: the DB is keyed by it, and a game
     that was never started has nothing to key on. The answer stays in the
     cache and the launch hook picks it up the first time the game runs.
+
+    Not a public entry point on its own -- everything that lands here has
+    been through `confirm`, which is where the user's yes and the existence
+    check are.
     """
     if not locations or not game.get("prefix_path") or not game.get(
             "user_dir"):
@@ -551,9 +671,24 @@ def store(game: dict[str, Any],
     })
 
 
-def lookup_and_store(game: dict[str, Any],
-                     refresh: bool = False) -> dict[str, Any]:
-    """`lookup` plus the DB write. Adds `stored` to the result."""
-    result = lookup(game, refresh=refresh)
-    result["stored"] = store(game, result["locations"]) is not None
-    return result
+def confirm(game: dict[str, Any],
+            locations: list[dict[str, Any]]) -> dict[str, Any]:
+    """The user accepted these suggestions. Returns what came of it.
+
+    `{added, waiting, stored}` -- the locations written into the DB (spelled
+    as they are on disk), the accepted ones whose folder does not exist yet,
+    and whether the DB write happened at all.
+
+    Two separate things, and the split is the point. The yes is remembered
+    for the whole list, in the config, keyed by the game (`db.
+    confirm_locations`) -- it outlives the cache entry it was given about and
+    no rescan can undo it. The DB, on the other hand, only ever gets the
+    folders that are there. The rest stay a permission without an object: the
+    first launch that creates one folds it in (`cached_locations`), and a
+    folder the game never creates is never written anywhere.
+    """
+    there, not_there = on_disk(game, locations)
+    db.confirm_locations(str(game.get("source", "")),
+                         str(game.get("app_id", "")), locations)
+    return {"added": there, "waiting": not_there,
+            "stored": store(game, there) is not None}

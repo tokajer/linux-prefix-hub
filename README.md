@@ -119,22 +119,30 @@ linux-prefix-hub --lookup "Cyberpunk 2077"
 ```
 PCGamingWiki knows 2 storage location(s) for Cyberpunk 2077.
     [saves  ] Saved Games/CD Projekt Red/Cyberpunk 2077
-    [config ] AppData/Local/CD Projekt Red/Cyberpunk 2077
+    [config ] AppData/Local/CD Projekt Red/Cyberpunk 2077  (not there yet)
     https://www.pcgamingwiki.com/wiki/Cyberpunk_2077
+Use these storage locations? [y/N]
 ```
 
-In the window it is the search button next to a game. What comes back is
-treated exactly like a location we found ourselves: you can open it, and move
-it into your home folder.
+In the window it is the search button next to a game, and the same list comes
+back in a dialog with Cancel and Add. Once you have said yes, what comes back
+is treated exactly like a location we found ourselves: you can open it, and
+move it into your home folder.
 
-Two things worth knowing:
+Four things worth knowing:
 
 - **It only happens when you ask.** Nothing is looked up in the background,
   and never while a game is starting or stopping. The switch in Settings
   ("Allow looking games up online") turns it off entirely.
 - **Answers are cached** for a month, so asking twice does not bother anyone's
-  server. If the game has never been started, the answer waits until it has —
-  we key everything by the game folder, and there is not one yet.
+  server.
+- **Nothing is kept until you say so.** The lookup makes a suggestion; the
+  list only changes when you answer yes (`--yes` answers for a script).
+- **A folder that is not there is not used.** Marked "(not there yet)" above:
+  the wiki describes Windows, and your copy of the game may never write that
+  folder at all. Nothing is created for it and nothing is moved into it — but
+  your yes is remembered, so it is picked up the first time the game really
+  does create it.
 
 The wiki is a starting point, not the last word: it describes Windows, and
 your machine is the one that decides. Play once and the diff confirms — or
@@ -272,7 +280,7 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --status                       learned storage locations
   --connect GAME                 install the launch hook
   --disconnect GAME              remove it again
-  --lookup GAME                  ask PCGamingWiki where it stores things
+  --lookup GAME [--yes]          ask PCGamingWiki where it stores things
   --redirect GAME [--target P]   move storage into your home folder
   --undo-redirect GAME           move it back
   --open GAME                    show its data folder (or the game folder)

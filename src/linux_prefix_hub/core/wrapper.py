@@ -125,16 +125,19 @@ def _before(ctx: dict[str, Any]) -> tuple[str, Snapshots]:
 
 
 def _known_locations(ctx: dict[str, Any]) -> list[dict[str, Any]]:
-    """What PCGamingWiki told us about this game -- from the cache only.
+    """What the user accepted from a lookup -- from the cache only.
 
     Reading a local JSON is all this does: the wiki is asked when the user
     asks (`--lookup`, the button in the window), never here. A game that has
     just exited is not the moment to wait on someone else's server.
+
+    And only what they said yes to, and only what is on disk right now
+    (`pcgw.cached_locations`). A launch is not a moment at which a suggestion
+    nobody looked at gets to become a storage location.
     """
     try:
         from . import pcgw
-        return pcgw.cached_locations(str(ctx.get("source", "")),
-                                     str(ctx.get("app_id", "")))
+        return pcgw.cached_locations(ctx)
     except Exception:
         return []
 

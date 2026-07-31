@@ -177,8 +177,10 @@ us to move. Everything else is observation. If any of it throws, the game
 still launches and its exit code is passed through — a save-game tracker that
 stops people from playing has failed at its job.
 
-Step 5 also reads what a lookup already found, **from disk only**. Nothing on
-this path waits on a network.
+Step 5 also reads what a lookup already found, **from disk only** — and of
+that, only what the user confirmed and only what exists right now. Nothing on
+this path waits on a network, and nothing on it promotes a suggestion nobody
+has looked at.
 
 ---
 
@@ -189,7 +191,8 @@ already, for thousands of games, so `core/pcgw.py` reads the
 `{{Game data/saves|…}}` rows of an article and maps them into the same two
 spaces the diff uses. Same shape, same DB, one extra `detected_by` value.
 
-Three constraints follow from it being someone else's server:
+Four constraints follow from it being someone else's server — and from an
+article being someone else's writing:
 
 1. **It never runs on its own.** A lookup is a button and a CLI flag. The
    launch hook reads the cache and nothing else — a game that just exited is
@@ -202,6 +205,13 @@ Three constraints follow from it being someone else's server:
    (their Cargo table); a name is not, so the search fallback refuses anything
    that is not clearly the same game — otherwise we would hand the user
    another game's save folders and call it knowledge.
+4. **It suggests, the user decides, the disk has the last word.** `lookup()`
+   writes nothing; `confirm()` is the yes, and it is remembered in
+   `config.json` where no rescan and no cache expiry can undo it. A folder the
+   article names but the machine does not have is never written, created or
+   redirected (`on_disk`) — not even after a yes, and not later either unless
+   the game itself creates it. The alternative is a storage location invented
+   out of an article, which the user then moves real data into.
 
 What the wiki says does not overrule what the diff *saw*: the diff wins on
 file counts and provenance, the wiki wins on `type`, which is the one thing a
