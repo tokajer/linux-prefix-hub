@@ -59,7 +59,12 @@ ICON_FILE = ICON_DIR / f"{APP_NAME}.png"
 
 # --- Files inside CONFIG_DIR --------------------------------------------
 CONFIG_FILE = CONFIG_DIR / "config.json"       # install_dir, language, ...
-PREFIX_DB = CONFIG_DIR / "prefixes.json"       # detected prefixes + storage
+PREFIX_DB = CONFIG_DIR / "prefixes.db"         # detected prefixes + storage
+# What PREFIX_DB was until the wrapper, the watcher and the window started
+# writing it at the same time. `core/db.py` folds it in once and then leaves
+# it alone -- it costs nothing and it is the only backup of a file that takes
+# months of playing to fill.
+LEGACY_PREFIX_DB = CONFIG_DIR / "prefixes.json"
 KNOWN_GAMES = CONFIG_DIR / "known_games.json"  # for new-game detection
 SNAPSHOT_DIR = CONFIG_DIR / "snapshots"        # pending pre-launch snapshots
 PCGW_DIR = CONFIG_DIR / "pcgamingwiki"         # cached answers, one per game

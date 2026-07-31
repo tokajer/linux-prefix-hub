@@ -92,6 +92,68 @@ def test_steam_connect_is_manual_while_steam_runs(tmp_path, monkeypatch):
     assert "%command%" in result.message
 
 
+# --- Steam Cloud ---------------------------------------------------------
+# Auto-Cloud entry: the key names the Windows folder it came from, and that
+# is the only kind that can collide with a folder we moved.
+AUTO_CLOUD = (
+    '"1091500"{'
+    '"ChangeNumber" "42"'
+    '"ostype" "-184"'
+    '"%WinMyDocuments%/My Games/Cyberpunk 2077/save0.sav"'
+    '{"root" "3" "size" "1024" "syncstate" "1"}'
+    '"%WinAppDataLocal%/CD Projekt Red/settings.json"'
+    '{"root" "4" "size" "64" "syncstate" "1"}'
+    '}')
+
+# UFS entry: a bare file name. Those live in userdata/<id>/<appid>/remote/,
+# never inside the prefix, so nothing we do can clash with them.
+UFS_CLOUD = ('"1245620"{"ChangeNumber" "7"'
+             '"ER0000.sl2"{"root" "0" "size" "2048"}}')
+
+
+def test_cloud_path_maps_only_the_roots_it_knows():
+    from linux_prefix_hub.adapters import steam
+    assert steam._cloud_path("%WinMyDocuments%/My Games/Q/s.sav") == \
+        "Documents/My Games/Q/s.sav"
+    assert steam._cloud_path("%WinAppDataLocalLow%/Studio") == \
+        "AppData/LocalLow/Studio"
+    assert steam._cloud_path("%WinSavedGames%") == "Saved Games"
+    # A bare name is UFS, and an unknown token is something we cannot place.
+    # Both mean "no claim", never a guessed folder.
+    assert steam._cloud_path("ER0000.sl2") is None
+    assert steam._cloud_path("%MacDocuments%/x") is None
+
+
+def test_cloud_paths_reads_every_account(tmp_path, monkeypatch):
+    steam, root = _fake_steam(tmp_path, monkeypatch)
+    write(root / "userdata/1234/1091500/remotecache.vdf", AUTO_CLOUD)
+    write(root / "userdata/5678/1091500/remotecache.vdf",
+          AUTO_CLOUD.replace("save0.sav", "save1.sav"))
+
+    assert steam.cloud_paths("1091500") == [
+        "Documents/My Games/Cyberpunk 2077/save0.sav",
+        "AppData/Local/CD Projekt Red/settings.json",
+        "Documents/My Games/Cyberpunk 2077/save1.sav",
+    ]
+
+
+def test_ufs_only_games_are_not_a_collision(tmp_path, monkeypatch):
+    steam, root = _fake_steam(tmp_path, monkeypatch)
+    write(root / "userdata/1234/1245620/remotecache.vdf", UFS_CLOUD)
+    assert steam.cloud_paths("1245620") == []
+
+
+def test_a_game_that_never_synced_says_nothing(tmp_path, monkeypatch):
+    steam, _root = _fake_steam(tmp_path, monkeypatch)
+    assert steam.cloud_paths("1091500") == []
+
+
+def test_a_broken_remotecache_is_not_a_collision(tmp_path, monkeypatch):
+    steam, root = _fake_steam(tmp_path, monkeypatch)
+    write(root / "userdata/1234/1091500/remotecache.vdf", '"1091500"{"a"')
+    assert steam.cloud_paths("1091500") == []
+
+
 # --- Lutris --------------------------------------------------------------
 LUTRIS_YML = """\
 # handmade config -- keep my comments!

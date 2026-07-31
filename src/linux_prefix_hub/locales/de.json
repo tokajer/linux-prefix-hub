@@ -184,5 +184,10 @@
   "Keeps {app} in the system tray, so it stays one click away and can tell you about new games and updates. Takes effect the next time you start it.": "Behält {app} im Systembereich der Leiste -- so bleibt es einen Klick entfernt und kann dir von neuen Spielen und Updates erzählen. Wirkt beim nächsten Start.",
   "Keep running in the background": "Im Hintergrund weiterlaufen",
   "Show window": "Fenster anzeigen",
-  "Quit": "Beenden"
+  "Quit": "Beenden",
+  "{launcher} also keeps a copy of {folder} in its cloud.": "{launcher} hält von {folder} auch eine Kopie in seiner Cloud.",
+  "Moving it works -- {launcher} follows the link just like the game does. But if the link is ever lost, {launcher} puts its own copy back into the game folder and there are two versions. We will never pick one for you: {n} file(s) are synced.": "Das Verschieben funktioniert -- {launcher} folgt der Verknüpfung genauso wie das Spiel. Geht die Verknüpfung aber einmal verloren, legt {launcher} seine eigene Kopie zurück in den Spielordner, und es gibt zwei Fassungen. Wir suchen dir keine davon aus: {n} Datei(en) werden abgeglichen.",
+  "'{path}' exists in both places: {n} file(s) are in the game folder and in {target} at once. Nothing was changed -- compare the two and delete the copy you do not want.": "'{path}' gibt es zweimal: {n} Datei(en) liegen zugleich im Spielordner und in {target}. Es wurde nichts verändert -- vergleiche beide und lösche die Fassung, die du nicht behalten willst.",
+  "Leave it": "So lassen",
+  "Move it anyway": "Trotzdem verschieben"
 }

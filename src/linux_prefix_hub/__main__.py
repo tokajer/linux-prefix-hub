@@ -83,7 +83,7 @@ def _cmd_scan(source: str | None) -> int:
 
 
 def _cmd_status() -> int:
-    from .core import db
+    from .core import db, redirect, registry
     prefixes = db.load_prefixes()
     if not prefixes:
         print(_("Nothing learned yet. Connect a game and play it once, then "
@@ -93,6 +93,7 @@ def _cmd_status() -> int:
         print(f"\n{entry.get('game_name')} "
               f"({entry.get('source')}/{entry.get('app_id')})")
         print("  " + _("game folder: {path}", path=entry.get("prefix_path")))
+        noted: set[str] = set()
         for loc in entry.get("storage_locations", []):
             if loc.get("redirected"):
                 where = _("moved to {target}",
@@ -105,6 +106,15 @@ def _cmd_status() -> int:
                 where = _("in place")
             print(f"    [{loc.get('type', '?'):<7}] {loc.get('win_path')}  "
                   f"({where})")
+            # Only for a folder we actually moved: everywhere else the second
+            # writer is Steam's business and none of ours.
+            root = registry.shell_folder_root(str(loc.get("win_path", "")))
+            if not loc.get("redirected") or not root or root in noted:
+                continue
+            noted.add(root)
+            warning = redirect.cloud_warning(entry, root)
+            if warning:
+                print(f"             {warning[0]}")
     return 0
 
 
@@ -251,6 +261,12 @@ def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
 
     failed = False
     for root in roots:
+        # Before, not after: "your launcher also writes here" is something to
+        # know while the folder is still where it was.
+        warning = None if undo else redirect.cloud_warning(entry, root)
+        if warning:
+            print(f"{root}: {warning[0]}")
+            print(f"  {warning[1]}")
         action = redirect.undo if undo else redirect.redirect
         result = (action(fingerprint, root) if undo
                   else action(fingerprint, root, target))

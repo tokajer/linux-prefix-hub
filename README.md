@@ -364,6 +364,12 @@ Marked in the code at the relevant spots:
    out of it), which is why there is a small compiled shim next to the
    launcher script. Still open: what file names `vpk` emits, for the release
    upload glob, and whether GearLever accepts a vpk-built AppImage.
+10. **The Steam Cloud root tokens** — `CLOUD_ROOTS` in `adapters/steam.py`
+    maps the root names at the head of a `remotecache.vdf` key onto our
+    folders. Valve documents the root names, not how they are written into
+    that file, so check the spelling against a game of yours that syncs
+    (`~/.steam/steam/userdata/<id>/<appid>/remotecache.vdf`). A token we do
+    not recognise costs a warning, never a wrong move.
 
 ## Documentation
 

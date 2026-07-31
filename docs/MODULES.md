@@ -74,7 +74,14 @@ falls back to the English source.
 
 ## `core/db.py` — prefix DB & config
 
-JSON in `~/.config/linux-prefix-hub/`, atomic writes (tmp + replace).
+Two stores, because they are used differently. `config.json` is a handful of
+settings one person changes now and then, written atomically (tmp + replace)
+and readable in an editor. `prefixes.db` is **SQLite**, because three
+processes write it: the launch wrapper files what a session changed, the
+watcher files a game it has just seen, and the window files what the user just
+decided. Read-whole-file/write-whole-file settles two of those by letting the
+later one win — and the earlier decision is gone, with nothing to show that it
+ever existed.
 
 `fingerprint`, `load_config`/`save_config`/`set_config`/`install_dir`,
 `extra_game_folders`/`add_game_folder`/`forget_game_folder` (the folders
@@ -99,8 +106,36 @@ last month does not stay a "config" location forever. The predicate comes from
 does not know what the user decided. Locations with any `LOCATION_USER_FIELDS`
 set are never even offered to it.
 
-**Building on it:** if the schema outgrows JSON, SQLite is the next step — but
-keep these signatures and the rest of the code will not notice.
+### The schema
+
+Two tables plus `meta`. `prefixes` and `locations` have a column for the
+fields we look things up by (`source`/`app_id`, `where_space`/`win_path`, the
+user-owned flags) and an `extra` JSON column for everything else — so an
+adapter can put a new key into an entry without a migration here, and
+`_entry_from_row` still hands back the same nested dict the rest of the app
+has always seen. A NULL column is *left out* of that dict rather than handed
+over as `None`: it was not there when it went in.
+
+`location_key(loc)` is still the identity of a location, and it is now also
+the primary key of the `locations` table — the two spaces stay two
+namespaces.
+
+Nothing internal calls `save_prefixes` any more; it exists because handing
+back what `load_prefixes` gave you has to keep working. `_connect()` opens a
+connection per call on purpose (`paths` resolves at import time and the tests
+reload it, so a cached one would write into the previous run's directory), and
+writes go through `BEGIN IMMEDIATE` so the read half of a merge is inside the
+same lock as the write half.
+
+**Migration:** a pre-SQLite `prefixes.json` is folded in once, on the first
+connection that finds no `migrated_from_json` flag in `meta`. The file is then
+left alone — it costs nothing, it is the only backup of a database that takes
+months of playing to fill, and the flag rather than the file's absence is what
+says the import happened. Delete the `.db` and the next start picks the JSON
+up again; delete the JSON and nothing is lost.
+
+**Building on it:** keep these signatures. Everything above the module reads
+and writes plain dicts and does not know there is a database under it.
 
 ---
 
@@ -268,6 +303,31 @@ location in either space — the redirect target if moved, the install folder fo
 game-folder locations, the path inside the prefix otherwise. That is what the
 open-in-file-manager action needs.
 
+### The other writer on the same folder
+
+`cloud_paths(entry)`, `cloud_conflicts(entry, root)`,
+`cloud_warning(entry, root) -> (headline, detail) | None`.
+
+A launcher with a cloud of its own writes into the very folder we replace with
+a symlink, while the game is not running and nobody is looking. Source-agnostic
+by *asking*: an adapter that has one defines `cloud_paths(app_id)`, every other
+one simply does not and stays silent. Steam is the only one today
+(`adapters/steam.py`).
+
+Nothing here refuses anything — with the link in place both sides follow it and
+the arrangement works. The guard exists so the one case where it does not (the
+link went missing, the other side put its copy back) is something the user was
+told about beforehand instead of finding out from two differing versions of
+their progress. The terminal prints it before the move, the window asks with a
+dialog whose default is *Leave it*, and `RedirectResult["warning"]` carries the
+same words back out of a finished move.
+
+The half that is not a warning: `_conflicts(src, dst)` compares the whole tree
+**before** anything moves, and a non-empty answer stops the move with both
+copies intact. This used to be a silent `rmtree` of whatever `_merge_move`
+skipped — that is, of the copy the game folder had. Two versions is a question
+only the player can answer, and deleting one is not an answer.
+
 ### Asked for before the game ever ran
 
 `request()` stores a wish, `apply_pending()` carries it out. Everything above
@@ -276,7 +336,7 @@ link — and a prefix only exists after the first launch, while *before* it is
 when people decide where a game's data should go (right after a lookup told
 them what it will write).
 
-The wish cannot live in `prefixes.json`: that is keyed by the prefix, and its
+The wish cannot live in the prefix DB: that is keyed by the prefix, and its
 absence is the whole situation. So it goes into `pending_redirects` in
 config.json under `<source>:<app_id>`, the only identity a game has this early.
 
@@ -412,11 +472,30 @@ that silently disappeared.
 
 `find_steam_roots`, `find_library_dirs` (multi-library — essential, otherwise
 games on the second disk are invisible), `iter_games`, `context_from_env`,
-`launch_options`, `localconfig_files`, `steam_is_running`, `is_connected`,
-`connect`, `disconnect`.
+`launch_options`, `userdata_dirs`, `localconfig_files`, `steam_is_running`,
+`is_connected`, `connect`, `disconnect`, `remote_caches`, `cloud_paths`.
+
+### Steam Cloud (`cloud_paths`)
+
+Two different things carry that name, and only one can collide with a folder
+we moved:
+
+| | where the files are | can it clash? |
+|---|---|---|
+| **UFS / the Cloud API** | `userdata/<account>/<appid>/remote/` | no — never inside the prefix |
+| **Auto-Cloud** | Windows folders *inside the prefix*, matched by pattern | yes — that is the folder we symlink |
+
+`remotecache.vdf` (per account, per game) tells them apart: an Auto-Cloud entry
+is keyed by a path that names the Windows root it came from
+(`%WinMyDocuments%/…`), a UFS entry by a bare file name. So `cloud_paths`
+returns only entries whose root token is in `CLOUD_ROOTS`, translated into our
+`win_path` spelling — an unknown token costs a warning, never a wrong move.
+`core/redirect.py` turns that into the user-facing guard.
 
 **VERIFY-ON-DEVICE:** `STEAM_ROOT_CANDIDATES` per distro/Flatpak; the
-`StateFlags & 4` semantics; the localconfig write path (keeps a `.bak`).
+`StateFlags & 4` semantics; the localconfig write path (keeps a `.bak`); the
+`CLOUD_ROOTS` token spelling against a real `remotecache.vdf` (Valve documents
+the root names, not how they are written into that file).
 
 ---
 

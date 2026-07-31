@@ -233,6 +233,35 @@ function **merges** and preserves user decisions: a rescan must never reset
 user-controlled fields belong in `USER_FIELDS` / `LOCATION_USER_FIELDS` in
 `core/db.py`, otherwise the next scan silently throws the user's choice away.
 
+Careful merging is not enough on its own, which is why the prefix DB is
+**SQLite** and not the JSON file it started as. Three processes write it — the
+launch wrapper, the watcher, the window — and a whole-file rewrite settles two
+of them by letting the later one win, one level below where `upsert_prefix`
+can see anything. Now every write touches the rows it means, and the read half
+of a merge sits inside the same `BEGIN IMMEDIATE` as the write half. Nothing
+above `core/db.py` noticed: the signatures and the dicts they pass around are
+unchanged. `config.json` is still JSON — one writer, and worth keeping
+openable in an editor.
+
+---
+
+## We are not the only one writing there
+
+A launcher with a cloud of its own copies files into the folder we replaced
+with a symlink, while the game is not running. Steam's Auto-Cloud is the case
+that exists today (`adapters/steam.cloud_paths`, read from `remotecache.vdf`).
+
+The design answer is the same shape as everything else here: `core/` **asks**
+(`redirect.cloud_paths` looks for a `cloud_paths` function on the adapter),
+the adapter answers, and an adapter without a cloud stays silent. No
+`if source == "steam"` below `adapters/`.
+
+The guard warns rather than refuses, because with the link in place both sides
+follow it and the arrangement is fine. What is *not* a warning:
+`redirect._conflicts` compares the whole tree before anything moves, and a file
+present on both sides stops the move with both copies intact. Two versions of
+someone's progress is a question only they can answer.
+
 ---
 
 ## Fingerprint instead of source logic

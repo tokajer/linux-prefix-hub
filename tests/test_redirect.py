@@ -114,16 +114,31 @@ def test_redirect_to_a_custom_target(game, tmp_path):
     assert (where / "My Games/Quake/save0.sav").exists()
 
 
-def test_redirect_never_overwrites_existing_files(game, isolated_home):
+def test_redirect_refuses_when_a_file_is_on_both_sides(game, isolated_home):
+    """Two copies is a question, and deleting one is not an answer.
+
+    This is the Steam Cloud case (`adapters/steam.cloud_paths`): the launcher
+    restored its copy into the game folder while ours sat in the home folder.
+    Nothing here can know which one the player wants, so nothing moves --
+    including the files that would not have clashed.
+    """
     from linux_prefix_hub.core import redirect
-    fingerprint, _prefix = game
+    fingerprint, prefix = game
     target = (isolated_home
               / "Games/linux-prefix-hub/Quake/Documents/My Games/Quake")
     target.mkdir(parents=True)
     (target / "save0.sav").write_text("older backup")
 
-    assert redirect.redirect(fingerprint, "Documents").ok
+    result = redirect.redirect(fingerprint, "Documents")
+
+    assert not result.ok and "exists in both places" in result.message
+    assert result["conflicts"] == ["My Games/Quake/save0.sav"]
+    # Both versions survive, and the folder is untouched -- not half moved.
     assert (target / "save0.sav").read_text() == "older backup"
+    physical = prefix / "drive_c/users/steamuser/Documents"
+    assert not physical.is_symlink()
+    assert (physical / "My Games/Quake/save0.sav").read_text() == "progress"
+    assert (physical / "My Games/Quake/config.cfg").exists()
 
 
 def test_undo_puts_everything_back(game):
@@ -174,6 +189,59 @@ def test_a_running_game_blocks_the_move(game, monkeypatch):
     monkeypatch.setattr(registry, "prefix_in_use", lambda prefix: True)
     result = redirect.redirect(fingerprint, "Documents")
     assert not result.ok and "still running" in result.message
+
+
+# --- The other writer on the same folder ---------------------------------
+@pytest.fixture
+def synced(monkeypatch):
+    """Steam Cloud is syncing part of what this game keeps in Documents."""
+    from linux_prefix_hub.adapters import steam
+    monkeypatch.setattr(steam, "cloud_paths", lambda app_id: [
+        "Documents/My Games/Quake/save0.sav",
+        "AppData/Local/Quake/log.txt"])
+
+
+def test_nothing_syncing_means_nothing_to_warn_about(game):
+    from linux_prefix_hub.core import db, redirect
+    fingerprint, _prefix = game
+    assert redirect.cloud_warning(db.get_prefix(fingerprint),
+                                  "Documents") is None
+
+
+def test_the_second_writer_is_named_before_the_move(game, synced):
+    from linux_prefix_hub.core import db, redirect
+    fingerprint, _prefix = game
+    entry = db.get_prefix(fingerprint)
+
+    # Per shell folder, not per game: the log in AppData is Steam's business
+    # and none of ours while we are moving Documents.
+    assert redirect.cloud_conflicts(entry, "Documents") == [
+        "Documents/My Games/Quake/save0.sav"]
+
+    warning = redirect.cloud_warning(entry, "Documents")
+    assert warning is not None
+    assert "Steam" in warning[0] and "Documents" in warning[0]
+    assert "1 file" in warning[1]
+
+
+def test_a_launcher_without_a_cloud_stays_silent(fake_prefix, synced):
+    """Only the adapter that has one answers; nobody guesses for the rest."""
+    from linux_prefix_hub.core import db, redirect
+    fingerprint = db.upsert_prefix({
+        "source": "lutris", "app_id": "quake", "game_name": "Quake",
+        "prefix_path": str(fake_prefix), "user_dir": "steamuser",
+        "storage_locations": [
+            {"type": "saves", "win_path": "Documents/My Games/Quake"}]})
+    assert redirect.cloud_warning(db.get_prefix(fingerprint),
+                                  "Documents") is None
+
+
+def test_a_finished_move_still_carries_the_warning(game, synced):
+    """The window shows it up front, the terminal after -- same words."""
+    from linux_prefix_hub.core import redirect
+    fingerprint, _prefix = game
+    result = redirect.redirect(fingerprint, "Documents")
+    assert result.ok and "Steam" in result["warning"]
 
 
 # --- Asked for before the game ever ran ----------------------------------

@@ -256,6 +256,94 @@ def test_a_new_filter_forgets_what_it_should_never_have_recorded(tmp_path):
     assert stored == {"Documents/Game", "AppData/Local/Temp/keepme"}
 
 
+# --- The prefix DB is SQLite ---------------------------------------------
+def test_the_prefix_db_is_a_database(tmp_path):
+    import sqlite3
+
+    from linux_prefix_hub.core import db, paths
+    db.upsert_prefix(_entry(tmp_path))
+
+    assert paths.PREFIX_DB.is_file()
+    assert not paths.LEGACY_PREFIX_DB.exists()   # nothing writes JSON now
+    with sqlite3.connect(str(paths.PREFIX_DB)) as raw:
+        assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_an_entry_keeps_fields_the_schema_has_no_column_for(tmp_path):
+    """`extra` is what lets an adapter add a field without a migration."""
+    from linux_prefix_hub.core import db
+    fingerprint = db.upsert_prefix(_entry(
+        tmp_path, state_flags=4, steamapps="/games/steamapps",
+        storage_locations=[{"type": "saves", "win_path": "Documents/CP",
+                            "file_count": 12, "detected_by": "diff",
+                            "first_seen": "2026-07-31"}]))
+
+    stored = db.get_prefix(fingerprint)
+    assert stored["state_flags"] == 4
+    assert stored["steamapps"] == "/games/steamapps"
+    location = stored["storage_locations"][0]
+    assert location["file_count"] == 12
+    assert location["detected_by"] == "diff"
+    assert location["first_seen"] == "2026-07-31"
+
+
+def test_one_games_write_leaves_the_other_games_row_alone(tmp_path):
+    """The reason this is a database: three processes write it.
+
+    A whole-file rewrite settles two writers by letting the later one win,
+    and the decision the earlier one made is gone with nothing to show for
+    it. These are row writes, so they cannot overwrite each other -- and a
+    connection somebody else already had open sees both.
+    """
+    import sqlite3
+
+    from linux_prefix_hub.core import db, paths
+    first = db.upsert_prefix(_entry(tmp_path))
+    db.set_managed(first, True)
+
+    other = sqlite3.connect(str(paths.PREFIX_DB))
+    try:
+        second = db.upsert_prefix(_entry(tmp_path / "second", app_id="42",
+                                         game_name="Other",
+                                         prefix_path=str(tmp_path / "two")))
+        rows = dict(other.execute("SELECT fingerprint, managed FROM prefixes"))
+    finally:
+        other.close()
+
+    assert rows == {first: 1, second: 0}
+
+
+def test_an_old_prefixes_json_is_folded_in_once(tmp_path):
+    """Upgrading must not cost anybody what they already learned."""
+    import json
+
+    from linux_prefix_hub.core import db, paths
+    legacy = {"abc123": {
+        "source": "steam", "app_id": "220", "game_name": "Half-Life 2",
+        "prefix_path": str(tmp_path / "pfx"), "user_dir": "steamuser",
+        "managed": True,
+        "storage_locations": [
+            {"type": "saves", "win_path": "Documents/HL2",
+             "redirected": True, "redirect_target": "/home/me/Games/HL2"}]}}
+    paths.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    paths.LEGACY_PREFIX_DB.write_text(json.dumps(legacy), encoding="utf-8")
+
+    stored = db.get_prefix("abc123")
+    assert stored is not None
+    assert stored["game_name"] == "Half-Life 2"
+    assert stored["managed"] is True
+    assert stored["storage_locations"][0]["redirect_target"] == \
+        "/home/me/Games/HL2"
+
+    # The file stays as a backup, and what says the import happened is the
+    # flag -- so a second start does not import it on top of a later edit.
+    assert paths.LEGACY_PREFIX_DB.is_file()
+    db.update_location("abc123", "Documents/HL2", redirected=False,
+                       redirect_target=None)
+    assert db.get_prefix("abc123")["storage_locations"][0]["redirected"] \
+        is False
+
+
 # --- opening a folder ----------------------------------------------------
 def test_open_folder_uses_the_first_opener_it_finds(tmp_path, monkeypatch):
     from linux_prefix_hub.core import desktop

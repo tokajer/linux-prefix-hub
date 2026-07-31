@@ -11,7 +11,7 @@ see the words prefix, Wine or `steamuser`.
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q            # 205 tests, ~1s, no real Steam needed
+.venv/bin/python -m pytest -q            # 253 tests, ~1s, no real Steam needed
 .venv/bin/ruff check src tests           # lint (config pinned in pyproject)
 PYTHONPATH=src python -m linux_prefix_hub --scan
 HOME=/tmp/x PYTHONPATH=src python -m linux_prefix_hub   # setup flow, safely
@@ -38,19 +38,19 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `__init__.py` | `__version__`, **derived** — generated `_version.py` (build) > install metadata > `0.0.0+dev`. The release tag is the only version there is |
 | `core/paths.py` | Every persistent path. Constants resolved at **import** time (tests reload it) |
 | `core/i18n.py` | `_()`; English source strings, `locales/de.json` catalog, `LPH_LANG` > config > `LANG` |
-| `core/db.py` | `prefixes.json`. `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS`; `prune_locations` drops what a filter should have caught, never a user's |
+| `core/db.py` | `config.json` (JSON) + `prefixes.db` (**SQLite**, three writers). `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS`; `prune_locations` drops what a filter should have caught, never a user's. Columns for what we query, `extra` JSON for the rest; a pre-SQLite `prefixes.json` is folded in once |
 | `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); the `IGNORE_*` filters (shader caches, logs, …) plus the user's own; pending snapshots for the 2-process hook flow |
 | `core/pcgw.py` | PCGamingWiki lookup: article → `{{Game data/…}}` → our locations. Optional, cached, **never on the launch path** (the wrapper reads the cache only) |
 | `core/desktop.py` | Hand a folder to the user's file manager. `xdg-open` first |
 | `core/wrapper.py` | The launch hook, both shapes (wrap and pre/post). Must never break a launch |
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
-| `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals |
+| `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals. `cloud_warning()` names the other writer on that folder before the move |
 | `core/integrate.py` | AppImage relocation, the three shims, systemd unit, desktop entry. Idempotent |
 | `core/updater.py` | Velopack: `check`/`download`/`apply`. `app_hook()` only in the AppImage. GearLever wins if present |
 | `core/vdf.py` | Valve KeyValues read **and write** (localconfig round-trip) |
 | `core/yamlite.py` | Lutris-shaped YAML subset; uses PyYAML when installed. **Read only** |
 | `adapters/base.py` | Adapter contract, `iter_games()`, `context_from_env()`, `user_dir_for()` |
-| `adapters/steam.py` | Multi-library discovery; hook = launch options (needs Steam closed, else manual) |
+| `adapters/steam.py` | Multi-library discovery; hook = launch options (needs Steam closed, else manual); `cloud_paths()` = Auto-Cloud from `remotecache.vdf` (UFS does not count — those files never enter the prefix) |
 | `adapters/lutris.py` | pga.db + YAML discovery; hook = `prelaunch_command`/`postexit_command` |
 | `adapters/heroic.py` | GamesConfig JSON discovery; hook = `wrapperOptions` (wrap shape, like Steam) |
 | `adapters/generic.py` | Hand-rolled setups: discovery by shape alone, path = id, no config to hook — the user gets a command. Runs **last**, skips what the others claim |
@@ -102,9 +102,15 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
    ends the app. An app the user can neither see nor quit is worse than one
    that exits when closed. `live` is asked again on every close, because a
    desktop shell restart takes the tray host away.
-9. Line length 79. `from __future__ import annotations`. Lazy imports inside
-   CLI branches.
-10. Things that need real hardware are marked `VERIFY-ON-DEVICE` in the code
+9. **Two copies of a file is a question, and deleting one is not an answer.**
+   `redirect._conflicts` compares the whole tree before anything moves and
+   stops the move with both versions intact. Steam's Auto-Cloud is the reason
+   this happens (`redirect.cloud_warning` says so in advance), a Proton update
+   that ate our symlink is how. Merging "never overwrites" is only half of it
+   — what you do with what the merge skipped is the other half.
+10. Line length 79. `from __future__ import annotations`. Lazy imports inside
+    CLI branches.
+11. Things that need real hardware are marked `VERIFY-ON-DEVICE` in the code
     and collected in the README.
 
 ## Adding a launcher
@@ -117,7 +123,10 @@ raising.
 
 ## State on disk
 
-`~/.config/linux-prefix-hub/{config.json,prefixes.json,known_games.json,snapshots/,pcgamingwiki/}`
+`~/.config/linux-prefix-hub/{config.json,prefixes.db,known_games.json,snapshots/,pcgamingwiki/}`
+(`prefixes.json` is the pre-SQLite file: folded in once, then kept as a backup
+and never written again — the `migrated_from_json` flag in the DB's `meta`
+table, not the file's absence, is what says the import happened),
 (`config.json` keys: `install_dir`, `redirect_root`, `language`,
 `online_lookup`, `game_folders`, `ignore_paths`, `setup_done`,
 `background_tray`, `pending_redirects`,

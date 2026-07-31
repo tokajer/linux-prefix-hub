@@ -18,6 +18,10 @@ Steam is the one source that cannot hook itself completely: its config UI is a
 black box, so the launch-options step is either written directly into
 localconfig.vdf (only safe while Steam is closed) or handed to the user.
 
+It is also the one source with a second writer on the same folders -- see
+`cloud_paths` for what Steam Cloud does and when it can collide with a moved
+storage location.
+
 VERIFY-ON-DEVICE:
   - Steam roots vary by distro/Flatpak. The list below covers the common
     cases; check on your system and extend if needed.
@@ -26,6 +30,10 @@ VERIFY-ON-DEVICE:
   - localconfig.vdf writing: Steam overwrites the file when it exits, so we
     refuse to write while Steam is running. Test the round-trip once with a
     game you do not mind losing launch options on (we keep a .bak).
+  - The Auto-Cloud root tokens in CLOUD_ROOTS: check the spelling against a
+    real remotecache.vdf of a game that syncs (Valve documents the root names,
+    not how they are written into that file). An unknown token costs us a
+    warning, never a wrong move.
 """
 from __future__ import annotations
 
@@ -202,17 +210,32 @@ def launch_options() -> str:
     return f'"{paths.WRAPPER_SHIM}" %command%'
 
 
-def localconfig_files() -> list[Path]:
-    """localconfig.vdf of every Steam account on this machine."""
+def userdata_dirs() -> list[Path]:
+    """One directory per Steam account on this machine.
+
+    Everything Steam keeps per person lives below here: the launch options we
+    write, and the cloud bookkeeping we read (`cloud_paths`).
+    """
     found: list[Path] = []
     for root in find_steam_roots():
         userdata = root / "userdata"
         if not userdata.is_dir():
             continue
-        for user in userdata.iterdir():
-            cfg = user / "config" / "localconfig.vdf"
-            if cfg.is_file():
-                found.append(cfg)
+        try:
+            entries = sorted(userdata.iterdir())
+        except OSError:
+            continue
+        found.extend(d for d in entries if d.is_dir())
+    return found
+
+
+def localconfig_files() -> list[Path]:
+    """localconfig.vdf of every Steam account on this machine."""
+    found: list[Path] = []
+    for user in userdata_dirs():
+        cfg = user / "config" / "localconfig.vdf"
+        if cfg.is_file():
+            found.append(cfg)
     return found
 
 
@@ -354,3 +377,113 @@ def disconnect(app_id: str) -> HookResult:
                           manual=True)
     _write_launch_options(app_id, None)
     return HookResult(True, _("Disconnected."))
+
+
+# --- Steam Cloud ---------------------------------------------------------
+# Two different things are called "Steam Cloud", and only one of them can
+# ever collide with a folder we moved:
+#
+#   UFS / the Cloud API -- the game asks Steam for its files, and they live in
+#       userdata/<account>/<appid>/remote/. None of that is inside the prefix,
+#       so replacing a shell folder with a symlink cannot touch it. Not our
+#       problem, and saying otherwise would be a warning nobody can act on.
+#   Auto-Cloud -- Steam itself copies files in and out of Windows folders
+#       *inside the prefix*, matched by pattern, while the game is not
+#       running. That is exactly the folder we replace with a symlink, and
+#       exactly the second writer this guard is about.
+#
+# remotecache.vdf tells the two apart. It is Steam's own record of what it
+# synced for one account and one game, and an Auto-Cloud entry is keyed by a
+# path that names the Windows root it came from; a UFS entry by a bare file
+# name. So a key with a root token is the evidence, and nothing else is.
+#
+# Why this is a warning and not a refusal: with the symlink in place both
+# sides follow it and the arrangement works. It goes wrong only when the link
+# is *not* in place -- a recreated prefix, a Proton update -- and Steam
+# restores the cloud copy into a real folder while our copy sits in the home
+# folder. Then there are two versions and no way for us to know which one the
+# player wants. `core/redirect.py` refuses to resolve that by deleting; this
+# is the part that says so before it happens.
+
+# Steam's UFS root names, as they appear at the head of a remotecache key,
+# mapped onto the storage-location roots we speak (registry.SHELL_FOLDERS).
+# Lower case, without the percent signs -- see `_cloud_path`.
+CLOUD_ROOTS = {
+    "winmydocuments": "Documents",
+    "winmydocuments64": "Documents",
+    "wincsidl_personal": "Documents",
+    "winappdataroaming": "AppData/Roaming",
+    "wincsidl_appdata": "AppData/Roaming",
+    "winappdatalocal": "AppData/Local",
+    "wincsidl_local_appdata": "AppData/Local",
+    "winappdatalocallow": "AppData/LocalLow",
+    "winsavedgames": "Saved Games",
+    "winmypictures": "Pictures",
+    "winmymusic": "Music",
+    "winmyvideo": "Videos",
+    "winmyvideos": "Videos",
+    "windesktop": "Desktop",
+}
+
+
+def remote_caches(app_id: str) -> list[Path]:
+    """Every account's remotecache.vdf for one game."""
+    found: list[Path] = []
+    for user in userdata_dirs():
+        cache = user / str(app_id) / "remotecache.vdf"
+        if cache.is_file():
+            found.append(cache)
+    return found
+
+
+def _cloud_path(key: str) -> str | None:
+    """One remotecache key as a win_path, or None if it is not Auto-Cloud.
+
+    `%WinMyDocuments%/My Games/Foo/save.dat` -> `Documents/My Games/Foo/
+    save.dat`. A bare file name (UFS) and an unknown root both return None:
+    we only claim a collision where we can name the folder it is in.
+    """
+    norm = key.replace("\\", "/").strip("/")
+    if not norm.startswith("%"):
+        return None
+    token, _sep, rest = norm.partition("/")
+    root = CLOUD_ROOTS.get(token.strip("%").lower())
+    if root is None:
+        return None
+    return f"{root}/{rest}" if rest else root
+
+
+def _collect_cloud_paths(node: Any, out: list[str]) -> None:
+    """Walk a parsed remotecache.vdf; file entries are dicts, scalars are not.
+
+    Written as a walk rather than "the one block below the appid" because the
+    nesting is Valve's to change and a miss here costs a warning.
+    """
+    if not isinstance(node, dict):
+        return
+    for key, value in node.items():
+        if not isinstance(value, dict):
+            continue                      # ChangeNumber, ostype, ...
+        path = _cloud_path(str(key))
+        if path is None:
+            _collect_cloud_paths(value, out)
+        elif path not in out:
+            out.append(path)
+
+
+def cloud_paths(app_id: str) -> list[str]:
+    """Windows paths Steam Cloud syncs into this game's prefix itself.
+
+    Empty means "nothing we know of": either the game does not use Auto-Cloud,
+    or it has never synced on this machine. Both are honest answers to give a
+    warning no.
+    """
+    found: list[str] = []
+    for cache in remote_caches(app_id):
+        try:
+            data = vdf.loads(cache.read_text(encoding="utf-8",
+                                             errors="ignore"))
+        except Exception:
+            continue                      # a broken cache is not a collision
+        _collect_cloud_paths(data, found)
+    return found

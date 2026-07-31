@@ -393,6 +393,54 @@ class LocationRow(Adw.ActionRow):
         if self._syncing:
             return False
         self._switch.set_sensitive(False)
+        if not wanted:
+            self._move(False)
+            return True
+
+        # Moving in: ask first whether anything else writes here. Reading a
+        # launcher's cloud bookkeeping is a few small files, but it is still
+        # disk, so it goes off the main loop like everything else.
+        entry, root = self._entry, self._root
+
+        def work() -> Any:
+            return redirect.cloud_warning(entry, root)
+
+        def done(warning: Any, error: Exception | None) -> None:
+            if error is not None or not warning:
+                self._move(True)
+                return
+            self._switch.set_sensitive(True)
+            self._confirm(warning)
+
+        tasks.run(work, done)
+        return True
+
+    def _confirm(self, warning: tuple[str, str]) -> None:
+        """A second writer on this folder -- let the user decide, not us.
+
+        Cancel is the default response: someone who is not sure should end up
+        where they started, and where they started is the arrangement their
+        launcher already knows how to keep.
+        """
+        dialog = Adw.AlertDialog(heading=esc(warning[0]),
+                                 body=esc(warning[1]))
+        dialog.add_response("cancel", _("Leave it"))
+        dialog.add_response("move", _("Move it anyway"))
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(_d: Any, response: str) -> None:
+            if response == "move":
+                self._switch.set_sensitive(False)
+                self._move(True)
+            else:
+                self._sync_switch(False)
+
+        dialog.connect("response", on_response)
+        dialog.present(self._window)
+
+    def _move(self, wanted: bool) -> None:
+        """Do it: into the home folder, or back into the game folder."""
         fingerprint, root = self._fingerprint, self._root
 
         def work() -> Any:
@@ -413,7 +461,6 @@ class LocationRow(Adw.ActionRow):
                 self._window.reload()
 
         tasks.run(work, done)
-        return True
 
 
 class SettingsDialog:

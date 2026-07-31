@@ -237,19 +237,90 @@ PCGamingWiki answer that has been waiting in the cache for a prefix to be
 keyed by — and the move happens on the first pass that finds the folder idle.
 `apply_pending` returning an empty list means "next pass", never "give up".
 
-That also answers where such a wish can live: not in `prefixes.json`, which is
+That also answers where such a wish can live: not in the prefix DB, which is
 keyed by the prefix, because the whole point is that there is none yet.
 `pending_redirects` in `config.json` is keyed by `<source>:<app_id>` — the
 only identity a game has before it has a folder.
 
 
 
+## ✅ Steam Cloud collision guard
+
+We are not the only one writing into that folder. Steam's **Auto-Cloud** copies
+files in and out of Windows folders *inside the prefix*, while the game is not
+running — the same folder we replace with a symlink.
+
+`adapters/steam.cloud_paths()` reads `remotecache.vdf`, `core/redirect.py`
+turns it into `cloud_warning()`, the terminal prints it before the move and the
+window asks with a dialog whose default is "Leave it".
+
+The three decisions worth remembering:
+
+- **Only Auto-Cloud counts.** The other thing called Steam Cloud — the UFS
+  API — keeps its files in `userdata/<account>/<appid>/remote/`, outside the
+  prefix entirely, where nothing we do can reach them. Warning about those
+  would be a warning nobody can act on. `remotecache.vdf` tells the two apart:
+  an Auto-Cloud entry is keyed by a path that names its Windows root
+  (`%WinMyDocuments%/…`), a UFS entry by a bare file name. An unknown root
+  token costs us a warning, never a wrong move.
+- **It warns, it does not refuse.** With the link in place both sides follow
+  it and the arrangement works fine. What goes wrong is the link *not* being
+  there — a recreated prefix, a Proton update — and Steam restoring its copy
+  into a real folder while ours sits in the home folder. That is worth saying
+  in advance and not worth forbidding.
+- **The adapter answers, the core asks.** `redirect.cloud_paths()` looks for a
+  `cloud_paths` function on the adapter and stays silent when there is none.
+  No shared guess, no `if source == "steam"` in `core/`.
+
+**Writing it turned up the bug it was warning about.** `_replace_with_symlink`
+merged the folder into the target — never overwriting, correctly — and then
+`rmtree`'d what was left, with a comment claiming only empty directories were.
+They were not: every file that existed on *both* sides had been skipped by the
+merge and was sitting right there. So the exact situation this guard is about
+was resolved by deleting the game folder's copy, silently. Now `_conflicts()`
+compares the whole tree first, a clash stops the move with both copies intact,
+and the message names the count and both places. Two versions is a question
+only the player can answer.
+
+## ✅ SQLite instead of JSON (`core/db.py`)
+
+`prefixes.json` → `prefixes.db`, with every signature in `db.py` unchanged.
+
+**The schema was never the reason; the writers were.** Three processes reach
+for this file — the launch wrapper files what a session changed, the watcher
+files a game it has just seen, the window files what the user just decided —
+and two of them can land in the same second. Read the whole file, change one
+field, write the whole file back, and the later writer wins: the other
+decision is gone, with nothing to show that it ever existed. That is the same
+invariant rule 1 is about, broken one level further down where no amount of
+careful merging in `upsert_prefix` could see it.
+
+The three decisions worth remembering:
+
+- **Columns for what we look up, `extra` for the rest.** `source`/`app_id`,
+  `where_space`/`win_path` and the user-owned flags get real columns; every
+  other key goes into an `extra` JSON column. So an adapter can put a new
+  field into an entry without a migration here, and callers still get the
+  same nested dicts they always did. A NULL column is left *out* of that dict
+  rather than handed over as `None` — it was not there when it went in.
+- **Read and write share one transaction.** `upsert_prefix` opens
+  `BEGIN IMMEDIATE` before it reads the existing entry, because read-then-write
+  is precisely the pattern being fixed.
+- **The old file stays.** It is folded in once, on the first connection that
+  finds no flag in `meta`, and then left alone. It costs nothing, it is the
+  only backup of a database that takes months of playing to fill, and the flag
+  rather than the file's absence is what says the import happened — so
+  deleting the `.db` picks the JSON back up and deleting the JSON loses
+  nothing.
+
+`config.json` stays JSON on purpose: a handful of settings one person changes
+now and then, worth keeping openable in an editor.
+
+Open: `known_games.json` (the watcher's new-game set) is still a file. It has
+one writer, so it has none of this problem.
+
 ## 🔭 Backlog
 
-- **Steam Cloud collision guard**: warn when redirected saves could clash with
-  cloud sync.
-- **SQLite** instead of JSON once the schema grows (keep the `db.py`
-  signatures).
 - **More languages**: one JSON file each; the machinery is done.
 - **aarch64 AppImage**: the build script already takes `ARCH`; add a matrix
   entry to `release.yml` once there is hardware to test on.

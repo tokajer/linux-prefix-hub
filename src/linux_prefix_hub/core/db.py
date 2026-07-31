@@ -1,7 +1,16 @@
 # SPDX-FileCopyrightText: 2026 tokajer
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Prefix DB and config persistence (JSON in ~/.config/linux-prefix-hub).
+"""Prefix DB (SQLite) and config (JSON) in ~/.config/linux-prefix-hub.
+
+The two are stored differently because they are used differently. `config.json`
+is a handful of settings one person changes by hand now and then, and a file
+somebody can open in an editor is worth keeping. The prefix DB is written by
+three processes that do not know about each other -- the launch wrapper files
+what a session changed, the watcher files a game it has just seen, the window
+files what the user just decided -- and read-whole-file/write-whole-file means
+whoever saves last quietly wins. That is what the `.db` is for; see the
+"Prefix DB" section below.
 
 Data model per game/prefix:
 {
@@ -33,10 +42,12 @@ controls are listed in USER_FIELDS / LOCATION_USER_FIELDS and are preserved by
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
-from collections.abc import Callable
+import sqlite3
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -229,24 +240,297 @@ def location_key(loc: dict[str, Any]) -> tuple[str, str]:
 
 
 # --- Prefix DB -----------------------------------------------------------
+# SQLite, because this file has three writers. The launch wrapper, the
+# watcher and the window all reach for it, two of them can land in the same
+# second, and "read the whole file, change one field, write the whole file
+# back" resolves that by letting whoever saves last win -- the other decision
+# is simply gone, with nothing to show that it ever happened. Every function
+# below touches the rows it means, inside one transaction, and lets SQLite
+# hold the lock.
+#
+# What a caller gets back is unchanged: the same nested dicts, the same
+# signatures, `where` and `win_path` still the identity of a location. The
+# columns are an index over an entry, not a replacement for it -- `extra`
+# carries every key we have no column for, so an adapter can put a new field
+# into an entry without a schema change here.
+SCHEMA_VERSION = 1
+MIGRATED_KEY = "migrated_from_json"
+
+# Entry fields with a column of their own. Everything else goes to `extra`.
+_ENTRY_COLUMNS = ("source", "app_id", "game_name", "prefix_path",
+                  "user_dir", "game_dir", "managed", "last_seen")
+# Same for a storage location. `where` is stored as `where_space` -- WHERE is
+# a SQL keyword and quoting it everywhere is not worth the cleverness.
+_LOCATION_COLUMNS = ("type", "where", "win_path", "file_count",
+                     "detected_by", "redirected", "redirect_target")
+
+_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS meta ("
+    " key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+
+    "CREATE TABLE IF NOT EXISTS prefixes ("
+    " fingerprint TEXT PRIMARY KEY,"
+    " source TEXT, app_id TEXT, game_name TEXT, prefix_path TEXT,"
+    " user_dir TEXT, game_dir TEXT,"
+    " managed INTEGER NOT NULL DEFAULT 0,"
+    " last_seen TEXT NOT NULL DEFAULT '',"
+    " extra TEXT NOT NULL DEFAULT '{}')",
+
+    "CREATE TABLE IF NOT EXISTS locations ("
+    " fingerprint TEXT NOT NULL,"
+    " where_space TEXT NOT NULL DEFAULT 'prefix',"
+    " win_path TEXT NOT NULL DEFAULT '',"
+    " type TEXT, file_count INTEGER, detected_by TEXT,"
+    " redirected INTEGER NOT NULL DEFAULT 0,"
+    " redirect_target TEXT,"
+    " position INTEGER NOT NULL DEFAULT 0,"
+    " extra TEXT NOT NULL DEFAULT '{}',"
+    " PRIMARY KEY (fingerprint, where_space, win_path))",
+
+    "CREATE INDEX IF NOT EXISTS locations_by_prefix"
+    " ON locations (fingerprint)",
+    "CREATE INDEX IF NOT EXISTS prefixes_by_game ON prefixes (source, app_id)",
+)
+
+
+@contextlib.contextmanager
+def _connect() -> Iterator[sqlite3.Connection]:
+    """A connection for the length of one call, and no longer.
+
+    Deliberately not cached. `paths` resolves its constants at import time and
+    the tests reload it, so a connection kept across that would go on writing
+    into the previous run's directory -- and the AppImage's three modes are
+    separate processes anyway, so there is nothing to keep it open for.
+    Opening a SQLite file is cheap; being wrong about which file is not.
+    """
+    paths.PREFIX_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(paths.PREFIX_DB), timeout=15.0,
+                           isolation_level=None)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 15000")
+        # WAL lets the watcher read while the wrapper writes. It needs shared
+        # memory, which a network home directory may not have -- then the
+        # default journal is used and everything still works, just serialised.
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("PRAGMA journal_mode = WAL")
+        _ensure_schema(conn)
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextlib.contextmanager
+def _write(conn: sqlite3.Connection) -> Iterator[None]:
+    """One write transaction. IMMEDIATE: take the lock before reading.
+
+    Read-then-write is exactly the pattern we moved here to fix, so the read
+    half has to be inside the same lock as the write half.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    for statement in _SCHEMA:
+        conn.execute(statement)
+    if _meta(conn, MIGRATED_KEY) is None:
+        _migrate_json(conn)
+
+
+def _meta(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?",
+                       (key,)).fetchone()
+    return str(row["value"]) if row else None
+
+
+def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                 (key, value))
+
+
+def _migrate_json(conn: sqlite3.Connection) -> None:
+    """Fold a pre-SQLite prefixes.json in, exactly once.
+
+    The file stays on disk afterwards. It is small, it is the only backup of
+    a database that takes months of playing to fill, and what says the import
+    happened is the flag in `meta` -- not the file being gone. So deleting
+    the database re-imports it, and deleting the file loses nothing.
+    """
+    legacy = _read_json(paths.LEGACY_PREFIX_DB, None)
+    with _write(conn):
+        if isinstance(legacy, dict):
+            for fp, entry in legacy.items():
+                if isinstance(entry, dict):
+                    _put_entry(conn, str(fp), entry)
+        _set_meta(conn, MIGRATED_KEY, _now())
+        _set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+
+
+# --- row <-> dict --------------------------------------------------------
+def _entry_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    """A prefixes row as the entry the rest of the app knows.
+
+    A NULL column is left out rather than handed over as None: it was not in
+    the dict when it went in, and an entry that grows keys on a round-trip is
+    a surprise waiting to happen.
+    """
+    entry: dict[str, Any] = {}
+    for field in _ENTRY_COLUMNS:
+        value = row[field]
+        if field == "managed":
+            entry[field] = bool(value)
+        elif value is not None:
+            entry[field] = value
+    extra = _loads(row["extra"])
+    entry.update(extra)
+    return entry
+
+
+def _location_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    loc: dict[str, Any] = {}
+    for field, value in (("type", row["type"]),
+                         ("where", row["where_space"]),
+                         ("win_path", row["win_path"]),
+                         ("file_count", row["file_count"]),
+                         ("detected_by", row["detected_by"])):
+        if value is not None:
+            loc[field] = value
+    loc["redirected"] = bool(row["redirected"])
+    if row["redirect_target"] is not None:
+        loc["redirect_target"] = row["redirect_target"]
+    loc.update(_loads(row["extra"]))
+    return loc
+
+
+def _loads(text: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _dumps(data: dict[str, Any]) -> str:
+    try:
+        return json.dumps(data, ensure_ascii=False)
+    except (TypeError, ValueError):
+        # An adapter put something unserialisable in an entry. Losing that one
+        # field is not a reason to lose the game it belongs to.
+        return "{}"
+
+
+def _put_entry(conn: sqlite3.Connection, fp: str,
+               entry: dict[str, Any]) -> None:
+    """Write one whole entry: its row, and all of its locations."""
+    extra = {k: v for k, v in entry.items()
+             if k not in _ENTRY_COLUMNS and k != "storage_locations"}
+    conn.execute(
+        "INSERT INTO prefixes (fingerprint, source, app_id, game_name,"
+        " prefix_path, user_dir, game_dir, managed, last_seen, extra)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(fingerprint) DO UPDATE SET"
+        " source = excluded.source, app_id = excluded.app_id,"
+        " game_name = excluded.game_name,"
+        " prefix_path = excluded.prefix_path,"
+        " user_dir = excluded.user_dir, game_dir = excluded.game_dir,"
+        " managed = excluded.managed, last_seen = excluded.last_seen,"
+        " extra = excluded.extra",
+        (fp, entry.get("source"), entry.get("app_id"),
+         entry.get("game_name"), entry.get("prefix_path"),
+         entry.get("user_dir"), entry.get("game_dir"),
+         1 if entry.get("managed") else 0,
+         str(entry.get("last_seen") or ""), _dumps(extra)))
+
+    conn.execute("DELETE FROM locations WHERE fingerprint = ?", (fp,))
+    for position, loc in enumerate(entry.get("storage_locations", [])):
+        if isinstance(loc, dict):
+            _put_location(conn, fp, position, loc)
+
+
+def _put_location(conn: sqlite3.Connection, fp: str, position: int,
+                  loc: dict[str, Any]) -> None:
+    where, win_path = location_key(loc)
+    extra = {k: v for k, v in loc.items() if k not in _LOCATION_COLUMNS}
+    conn.execute(
+        "INSERT OR REPLACE INTO locations (fingerprint, where_space,"
+        " win_path, type, file_count, detected_by, redirected,"
+        " redirect_target, position, extra)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (fp, where, win_path, loc.get("type"), loc.get("file_count"),
+         loc.get("detected_by"), 1 if loc.get("redirected") else 0,
+         loc.get("redirect_target"), position, _dumps(extra)))
+
+
+def _read_one(conn: sqlite3.Connection, fp: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM prefixes WHERE fingerprint = ?",
+                       (fp,)).fetchone()
+    if row is None:
+        return None
+    entry = _entry_from_row(row)
+    entry["storage_locations"] = [
+        _location_from_row(r) for r in conn.execute(
+            "SELECT * FROM locations WHERE fingerprint = ?"
+            " ORDER BY position, rowid", (fp,))]
+    return entry
+
+
+# --- the API the rest of the app uses ------------------------------------
 def load_prefixes() -> dict[str, Any]:
-    return _read_json(paths.PREFIX_DB, {})
+    """Every entry, in the order they were first seen."""
+    entries: dict[str, Any] = {}
+    with _connect() as conn:
+        for row in conn.execute("SELECT * FROM prefixes ORDER BY rowid"):
+            entry = _entry_from_row(row)
+            entry["storage_locations"] = []
+            entries[str(row["fingerprint"])] = entry
+        for row in conn.execute("SELECT * FROM locations"
+                                " ORDER BY fingerprint, position, rowid"):
+            entry = entries.get(str(row["fingerprint"]))
+            if entry is not None:
+                entry["storage_locations"].append(_location_from_row(row))
+    return entries
 
 
 def save_prefixes(db: dict[str, Any]) -> None:
-    _write_json(paths.PREFIX_DB, db)
+    """Replace the whole database with `db`.
+
+    The counterpart to `load_prefixes`, kept because handing back what you
+    were given has to keep working. Nothing in here uses it: writing all of
+    it to change one field is the pattern this module moved away from.
+    """
+    with _connect() as conn, _write(conn):
+        conn.execute("DELETE FROM locations")
+        conn.execute("DELETE FROM prefixes")
+        for fp, entry in db.items():
+            if isinstance(entry, dict):
+                _put_entry(conn, str(fp), entry)
 
 
 def upsert_prefix(entry: dict[str, Any]) -> str:
     """Insert or update a detected prefix; returns its fingerprint.
 
     Merges storage_locations and preserves the user-owned flags, so that a
-    rescan never overwrites what the user decided.
+    rescan never overwrites what the user decided. Read and write share one
+    transaction -- a rescan and a click on the same game are two processes,
+    and the whole point of the merge is lost if the read half sees a state
+    the write half then overwrites.
     """
-    db = load_prefixes()
     fp = fingerprint(entry["prefix_path"])
-    existing = db.get(fp, {})
+    with _connect() as conn, _write(conn):
+        existing = _read_one(conn, fp) or {}
+        _put_entry(conn, fp, _merged(existing, entry))
+    return fp
 
+
+def _merged(existing: dict[str, Any],
+            entry: dict[str, Any]) -> dict[str, Any]:
+    """The invariant at the top of this file, in one place."""
     merged = {**existing, **entry, "last_seen": _now()}
 
     for field in USER_FIELDS:
@@ -269,40 +553,56 @@ def upsert_prefix(entry: dict[str, Any]) -> str:
         loc.setdefault("redirected", False)
         old_locs[key] = loc
     merged["storage_locations"] = list(old_locs.values())
-
-    db[fp] = merged
-    save_prefixes(db)
-    return fp
+    return merged
 
 
 def get_prefix(fp: str) -> dict[str, Any] | None:
-    return load_prefixes().get(fp)
+    with _connect() as conn:
+        return _read_one(conn, fp)
 
 
 def find_prefix(source: str, app_id: str) -> tuple[str, dict[str, Any]] | None:
     """Look up a known prefix by source + app id."""
-    for fp, entry in load_prefixes().items():
-        if entry.get("source") == source and entry.get("app_id") == app_id:
-            return fp, entry
-    return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT fingerprint FROM prefixes"
+            " WHERE source = ? AND app_id = ? ORDER BY rowid LIMIT 1",
+            (source, app_id)).fetchone()
+        if row is None:
+            return None
+        fp = str(row["fingerprint"])
+        entry = _read_one(conn, fp)
+        return (fp, entry) if entry is not None else None
 
 
 def resolve(needle: str) -> tuple[str, dict[str, Any]] | None:
     """Resolve a fingerprint, an app id or a (partial) game name to an entry.
 
-    Convenience for the CLI so users never have to type a fingerprint.
+    Convenience for the CLI so users never have to type a fingerprint. The
+    name match stays in Python rather than becoming a LIKE: SQLite's `lower`
+    only folds ASCII, and a library with a German or Japanese title in it
+    would quietly stop matching what the user typed.
     """
-    db = load_prefixes()
-    if needle in db:
-        return needle, db[needle]
-    low = needle.lower()
-    for fp, entry in db.items():
-        if entry.get("app_id") == needle:
-            return fp, entry
-    for fp, entry in db.items():
-        if low in str(entry.get("game_name", "")).lower():
-            return fp, entry
-    return None
+    with _connect() as conn:
+        found = conn.execute(
+            "SELECT fingerprint FROM prefixes WHERE fingerprint = ?",
+            (needle,)).fetchone()
+        if found is None:
+            found = conn.execute(
+                "SELECT fingerprint FROM prefixes WHERE app_id = ?"
+                " ORDER BY rowid LIMIT 1", (needle,)).fetchone()
+        if found is None:
+            low = needle.lower()
+            for row in conn.execute("SELECT fingerprint, game_name"
+                                    " FROM prefixes ORDER BY rowid"):
+                if low in str(row["game_name"] or "").lower():
+                    found = row
+                    break
+        if found is None:
+            return None
+        fp = str(found["fingerprint"])
+        entry = _read_one(conn, fp)
+        return (fp, entry) if entry is not None else None
 
 
 def update_location(fp: str, win_path: str, where: str = "prefix",
@@ -312,16 +612,17 @@ def update_location(fp: str, win_path: str, where: str = "prefix",
     `where` defaults to the prefix because that is the only space anything
     is ever redirected in.
     """
-    db = load_prefixes()
-    entry = db.get(fp)
-    if not entry:
-        return False
-    for loc in entry.get("storage_locations", []):
-        if location_key(loc) == (where, win_path):
-            loc.update(fields)
-            save_prefixes(db)
-            return True
-    return False
+    with _connect() as conn, _write(conn):
+        row = conn.execute(
+            "SELECT * FROM locations WHERE fingerprint = ?"
+            " AND where_space = ? AND win_path = ?",
+            (fp, where, win_path)).fetchone()
+        if row is None:
+            return False
+        loc = _location_from_row(row)
+        loc.update(fields)
+        _put_location(conn, fp, int(row["position"]), loc)
+        return True
 
 
 def prune_locations(fp: str | None,
@@ -338,18 +639,22 @@ def prune_locations(fp: str | None,
     a decision, and undoing it silently would break the invariant at the top
     of this file (and leave a symlink pointing at a folder nobody tracks).
     """
-    db = load_prefixes()
-    entries = [e for f, e in db.items() if fp is None or f == fp]
+    query = "SELECT * FROM locations"
+    args: tuple[Any, ...] = ()
+    if fp is not None:
+        query += " WHERE fingerprint = ?"
+        args = (fp,)
     dropped = 0
-    for entry in entries:
-        locations = entry.get("storage_locations", [])
-        kept = [loc for loc in locations
-                if _user_owned(loc) or not is_noise(loc)]
-        if len(kept) != len(locations):
-            dropped += len(locations) - len(kept)
-            entry["storage_locations"] = kept
-    if dropped:
-        save_prefixes(db)
+    with _connect() as conn, _write(conn):
+        for row in conn.execute(query, args).fetchall():
+            loc = _location_from_row(row)
+            if _user_owned(loc) or not is_noise(loc):
+                continue
+            conn.execute(
+                "DELETE FROM locations WHERE fingerprint = ?"
+                " AND where_space = ? AND win_path = ?",
+                (row["fingerprint"], row["where_space"], row["win_path"]))
+            dropped += 1
     return dropped
 
 
@@ -360,10 +665,8 @@ def _user_owned(loc: dict[str, Any]) -> bool:
 
 def set_managed(fp: str, managed: bool) -> bool:
     """Record whether the launch hook is installed for this prefix."""
-    db = load_prefixes()
-    entry = db.get(fp)
-    if not entry:
-        return False
-    entry["managed"] = managed
-    save_prefixes(db)
-    return True
+    with _connect() as conn, _write(conn):
+        changed = conn.execute(
+            "UPDATE prefixes SET managed = ? WHERE fingerprint = ?",
+            (1 if managed else 0, fp)).rowcount
+    return bool(changed)

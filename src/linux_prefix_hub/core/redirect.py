@@ -29,6 +29,11 @@ Everything above needs a prefix, and a prefix only exists after the first
 launch -- while the most natural moment to ask is *before* it. `request()`
 stores that wish and `apply_pending()` acts on it later; see `request` for why
 the two are apart.
+
+We are not always the only one writing there. A launcher with a cloud of its
+own copies files into that same folder while the game is not running --
+`cloud_warning()` says so before the move, and `_replace_with_symlink()`
+refuses to resolve the resulting two-copies case by deleting one of them.
 """
 from __future__ import annotations
 
@@ -131,29 +136,68 @@ def _merge_move(src: Path, dst: Path) -> tuple[int, list[str]]:
     return moved, skipped
 
 
-def _replace_with_symlink(physical: Path, target: Path) -> bool:
-    """Make `physical` a symlink to `target`, moving any real data over."""
+def _conflicts(src: Path, dst: Path) -> list[str]:
+    """Files that already exist on both sides -- asked before anything moves.
+
+    `_merge_move` would find the same clashes, but only when it walked into
+    them, with everything before them already moved. "Nothing was changed" is
+    then not true any more, and a half-moved folder is the worst of the three
+    possible states. So the whole tree is compared first.
+    """
+    if not dst.is_dir():
+        return []
+    found: list[str] = []
+    for item in sorted(src.rglob("*")):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(src)
+        if (dst / rel).exists():
+            found.append(str(rel))
+    return found
+
+
+def _replace_with_symlink(physical: Path,
+                          target: Path) -> tuple[bool, list[str]]:
+    """Make `physical` a symlink to `target`, moving any real data over.
+
+    Returns (did it work, files that exist on both sides). A non-empty second
+    element is the *only* reason we stop half way, and it is deliberate: at
+    that point the same file sits in the prefix and in the home folder, and
+    `_merge_move` has already refused to overwrite either. Deleting what it
+    skipped -- which is what removing the folder wholesale would do -- would
+    resolve that conflict by throwing one version away, silently. So the
+    folder is left exactly as it was and the caller gets something to say.
+
+    That is not a hypothetical: Steam Cloud restores its copy into a prefix
+    whose symlink went missing (see `adapters/steam.cloud_paths`), and a
+    Proton update that recreates the folder is how the link goes missing.
+    """
     target.mkdir(parents=True, exist_ok=True)
 
     if physical.is_symlink():
         if os.path.realpath(physical) == os.path.realpath(target):
-            return True                      # already linked: self-heal no-op
+            return True, []                  # already linked: self-heal no-op
         physical.unlink()
     elif physical.is_dir():
-        _merge_move(physical, target)
+        clashes = _conflicts(physical, target)
+        if clashes:
+            return False, clashes
+        _moved, skipped = _merge_move(physical, target)
+        if skipped:
+            return False, skipped      # raced, or unreadable: still not ours
         try:
             shutil.rmtree(physical)          # only empty dirs are left now
         except OSError:
-            return False
+            return False, []
     elif physical.exists():
-        return False                         # a file where a folder belongs
+        return False, []                     # a file where a folder belongs
 
     physical.parent.mkdir(parents=True, exist_ok=True)
     try:
         physical.symlink_to(target, target_is_directory=True)
     except OSError:
-        return False
-    return True
+        return False, []
+    return True, []
 
 
 def redirect(fingerprint: str, win_path: str,
@@ -187,7 +231,16 @@ def redirect(fingerprint: str, win_path: str,
     dest = Path(os.path.expanduser(str(dest)))
 
     physical = physical_path(entry, root)
-    if not _replace_with_symlink(physical, dest):
+    ok, clashes = _replace_with_symlink(physical, dest)
+    if not ok:
+        if clashes:
+            return RedirectResult(
+                False,
+                _("'{path}' exists in both places: {n} file(s) are in the "
+                  "game folder and in {target} at once. Nothing was changed "
+                  "-- compare the two and delete the copy you do not want.",
+                  path=root, n=len(clashes), target=str(dest)),
+                conflicts=clashes, target=str(dest), root=root)
         return RedirectResult(False, _("Could not move '{path}'.", path=root))
 
     registry.set_shell_folder(entry["prefix_path"], root, dest)
@@ -197,9 +250,11 @@ def redirect(fingerprint: str, win_path: str,
             db.update_location(fingerprint, loc["win_path"],
                                redirected=True, redirect_target=str(dest))
 
+    warning = cloud_warning(entry, root)
     return RedirectResult(True,
                           _("Moved to {target}.", target=str(dest)),
-                          target=str(dest), root=root)
+                          target=str(dest), root=root,
+                          warning=" ".join(warning) if warning else "")
 
 
 def undo(fingerprint: str, win_path: str,
@@ -259,6 +314,64 @@ def movable_roots(entry: dict[str, Any]) -> list[str]:
         if root and root not in roots:
             roots.append(root)
     return roots
+
+
+# --- The other writer on the same folder ---------------------------------
+# A launcher that syncs game data to a cloud writes into the very folder we
+# replace with a symlink, while the game is not running and nobody is
+# watching. Nothing in here refuses anything -- with the link in place both
+# sides follow it and the arrangement works. It exists so that the one case
+# where it does not (the link went missing, the other side put its copy back)
+# is something the user was told about beforehand rather than something they
+# find out from two differing versions of their progress.
+def cloud_paths(entry: dict[str, Any]) -> list[str]:
+    """Windows paths the game's launcher syncs into the folder itself.
+
+    Source-agnostic by asking, not by knowing: an adapter that has a cloud of
+    its own answers `cloud_paths(app_id)`, every other one simply does not
+    define it and stays silent. Steam is the only one today (Auto-Cloud); GOG
+    and Epic sync through the game, not behind it.
+    """
+    source = str(entry.get("source", ""))
+    app_id = str(entry.get("app_id", ""))
+    if not source or not app_id:
+        return []
+    try:
+        from ..adapters import base
+        ask = getattr(base.get_adapter(source), "cloud_paths", None)
+        return list(ask(app_id)) if ask else []
+    except Exception:
+        # Same rule as discovery: a launcher we cannot read is not a reason
+        # to fail, it is a reason to say nothing.
+        return []
+
+
+def cloud_conflicts(entry: dict[str, Any], root: str) -> list[str]:
+    """The synced paths that lie inside one shell folder."""
+    return [path for path in cloud_paths(entry)
+            if registry.shell_folder_root(path) == root]
+
+
+def cloud_warning(entry: dict[str, Any],
+                  root: str) -> tuple[str, str] | None:
+    """(headline, detail) if this folder has a second writer, else None.
+
+    Two strings rather than one so the window can use them as a dialog's
+    heading and body, and the terminal as two lines. Same words either way.
+    """
+    conflicts = cloud_conflicts(entry, root)
+    if not conflicts:
+        return None
+    from ..adapters.base import source_label
+    launcher = source_label(str(entry.get("source", "")))
+    return (
+        _("{launcher} also keeps a copy of {folder} in its cloud.",
+          launcher=launcher, folder=root),
+        _("Moving it works -- {launcher} follows the link just like the game "
+          "does. But if the link is ever lost, {launcher} puts its own copy "
+          "back into the game folder and there are two versions. We will "
+          "never pick one for you: {n} file(s) are synced.",
+          launcher=launcher, n=len(conflicts)))
 
 
 # --- Asked for before the game ever ran ---------------------------------
@@ -399,7 +512,8 @@ def reapply(fingerprint: str) -> list[str]:
         if (physical.is_symlink()
                 and os.path.realpath(physical) == os.path.realpath(target)):
             continue
-        if _replace_with_symlink(physical, target):
+        ok, _clashes = _replace_with_symlink(physical, target)
+        if ok:
             registry.set_shell_folder(entry["prefix_path"], root, target)
             healed.append(root)
     return healed
