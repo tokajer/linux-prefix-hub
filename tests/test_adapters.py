@@ -603,3 +603,57 @@ def test_an_unknown_source_is_kept_rather_than_dropped():
 def test_grouping_an_empty_library_is_an_empty_list():
     from linux_prefix_hub.adapters import base
     assert base.group_by_source([]) == []
+
+
+# --- Games the user does not want to see ---------------------------------
+def test_hidden_games_are_dropped_from_a_list():
+    from linux_prefix_hub.adapters import base
+    from linux_prefix_hub.core import db
+    library = [_game("Quake", "lutris"), _game("Portal 2", "steam")]
+
+    assert db.hide_game("steam", "portal 2") is True
+    assert [g["game_name"] for g in base.visible_games(library)] == ["Quake"]
+
+    assert db.unhide_game("steam", "portal 2") is True
+    assert len(list(base.visible_games(library))) == 2
+
+
+def test_hiding_takes_a_game_out_of_the_list_and_nothing_else(fake_prefix):
+    """A filter that quietly turns features off is one nobody dares use."""
+    from linux_prefix_hub.adapters import base
+    from linux_prefix_hub.core import db
+    db.upsert_prefix({"source": "steam", "app_id": "620",
+                      "game_name": "Portal 2", "managed": True,
+                      "prefix_path": str(fake_prefix),
+                      "storage_locations": [{"type": "saves",
+                                             "win_path": "Documents"}]})
+    db.hide_game("steam", "620")
+
+    # Still connected, still learned about, still resolvable by name.
+    found = db.find_prefix("steam", "620")
+    assert found[1]["managed"] is True
+    assert found[1]["storage_locations"][0]["win_path"] == "Documents"
+    assert db.resolve("Portal 2") is not None
+    # ... and `iter_games` itself does not filter: the launch hook and the
+    # pending moves both go through it.
+    monkeyed = [{"source": "steam", "app_id": "620"}]
+    assert list(base.visible_games(monkeyed)) == []
+
+
+def test_hiding_the_same_game_twice_changes_nothing():
+    from linux_prefix_hub.core import db
+    assert db.hide_game("lutris", "quake") is True
+    assert db.hide_game("lutris", "quake") is False
+    assert db.hidden_games() == ["lutris:quake"]
+    assert db.is_hidden("lutris", "quake") is True
+
+    assert db.unhide_game("lutris", "quake") is True
+    assert db.unhide_game("lutris", "quake") is False
+    assert db.is_hidden("lutris", "quake") is False
+
+
+def test_hidden_games_survive_a_corrupt_value():
+    from linux_prefix_hub.core import db
+    db.set_config("hidden_games", "not a list")
+    assert db.hidden_games() == []
+    assert db.is_hidden("steam", "620") is False

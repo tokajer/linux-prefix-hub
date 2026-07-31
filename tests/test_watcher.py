@@ -209,3 +209,28 @@ def test_a_failing_move_never_takes_the_watcher_down(wishful, monkeypatch):
     monkeypatch.setattr(redirect, "apply_pending", boom)
 
     assert wishful._refresh({"steam:2310"}) == {"steam:2310"}
+
+
+def test_a_hidden_game_is_noted_but_does_not_knock(watcher, monkeypatch):
+    """The user took it out of the list; a notification is the loudest list.
+
+    Still recorded as known, so unhiding it later does not set off the
+    announcement it was spared in the first place.
+    """
+    from linux_prefix_hub.core import db
+    monkeypatch.setattr(watcher.base, "iter_games",
+                        lambda: _games(("Portal 2", "steam", "620", True)))
+    known = watcher._initial_known()
+
+    db.hide_game("steam", "2098510")
+    monkeypatch.setattr(watcher.base, "iter_games", lambda: _games(
+        ("Portal 2", "steam", "620", True),
+        ("Zenkcraft", "steam", "2098510", True)))
+    known = watcher._refresh(known)
+
+    assert watcher.sent == []
+    assert known == {"steam:620", "steam:2098510"}
+
+    db.unhide_game("steam", "2098510")
+    assert watcher._refresh(known) == known
+    assert watcher.sent == []

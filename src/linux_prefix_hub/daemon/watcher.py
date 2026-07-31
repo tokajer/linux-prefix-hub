@@ -54,7 +54,7 @@ def _save_known(known: set[str]) -> None:
 
 
 def _key(game: dict) -> str:
-    return f"{game.get('source')}:{game.get('app_id')}"
+    return base.game_key(game)
 
 
 def _installed_keys() -> set[str]:
@@ -71,7 +71,14 @@ def _notify(title: str, body: str) -> None:
 
 
 def _scan_once(games: list[dict], known: set[str]) -> set[str]:
-    """One scan pass: report games that finished installing."""
+    """One scan pass: report games that finished installing.
+
+    A hidden game is still recorded as known, it just does not knock: the
+    user took it out of the list, and a notification is the loudest kind of
+    list there is. Recording it is what keeps unhiding it later quiet.
+    """
+    from ..core import db
+    hidden = set(db.hidden_games())
     newly = set()
     for game in games:
         if not game.get("installed"):
@@ -79,9 +86,10 @@ def _scan_once(games: list[dict], known: set[str]) -> set[str]:
         key = _key(game)
         if key in known:
             continue
-        _notify(_("New game detected"),
-                _("{game} is installed. Open {app} to manage its data.",
-                  game=game.get("game_name", key), app=paths.APP_TITLE))
+        if key not in hidden:
+            _notify(_("New game detected"),
+                    _("{game} is installed. Open {app} to manage its data.",
+                      game=game.get("game_name", key), app=paths.APP_TITLE))
         newly.add(key)
     return newly
 

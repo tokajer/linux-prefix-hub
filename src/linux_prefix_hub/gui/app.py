@@ -61,10 +61,12 @@ def _copy(text: str) -> None:
 class GameRow(Adw.ExpanderRow):
     """One game: connect switch, plus a row per known save location."""
 
-    def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
+    def __init__(self, window: MainWindow, game: dict[str, Any],
+                 hidden: bool = False) -> None:
         super().__init__()
         self._window = window
         self._game = game
+        self._hidden = hidden
         self._syncing = False
         # Raw, unescaped -- get_title() would hand back the escaped form and
         # escaping that again shows "&amp;" to the user.
@@ -81,6 +83,17 @@ class GameRow(Adw.ExpanderRow):
         self._lookup.connect("clicked", self._on_lookup)
         self.add_suffix(self._lookup)
 
+        self._hide = Gtk.Button(
+            icon_name=("view-reveal-symbolic" if hidden
+                       else "view-conceal-symbolic"),
+            valign=Gtk.Align.CENTER)
+        self._hide.add_css_class("flat")
+        self._hide.set_tooltip_text(
+            _("Show this game in the list again") if hidden
+            else _("Hide this game from the list"))
+        self._hide.connect("clicked", self._on_hide)
+        self.add_suffix(self._hide)
+
         self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._switch.set_tooltip_text(
             _("Let this game report where it stores its data"))
@@ -93,13 +106,17 @@ class GameRow(Adw.ExpanderRow):
     # --- presentation ----------------------------------------------------
     def _subtitle(self) -> str:
         # No source here: the group this row sits in is already named after
-        # it (`MainWindow._show`), and repeating it in every subtitle only
+        # it (`MainWindow._render`), and repeating it in every subtitle only
         # crowds out the part that differs.
         if not self._game.get("installed"):
-            return _("not fully installed yet")
-        if not self._game.get("prefix_path"):
-            return _("not started yet")
-        return _("ready")
+            state = _("not fully installed yet")
+        elif not self._game.get("prefix_path"):
+            state = _("not started yet")
+        else:
+            state = _("ready")
+        # Only ever drawn while "show hidden" is on, and then saying why this
+        # row is here at all is the whole point.
+        return _("hidden -- {state}", state=state) if self._hidden else state
 
     def _sync_switch(self, active: bool) -> None:
         self._syncing = True
@@ -198,6 +215,28 @@ class GameRow(Adw.ExpanderRow):
         tasks.run(work, done)
         # We drive the visual state ourselves once the work is finished.
         return True
+
+    def _on_hide(self, *_args: Any) -> None:
+        """Take this game out of the list, or put it back.
+
+        One small config key, no disk walk -- so it runs here rather than
+        through `tasks.run`. The redraw is deferred to the next idle turn
+        because it removes the group this very button sits in, and a widget
+        that destroys itself from inside its own signal handler is a crash
+        waiting for the wrong GTK version.
+        """
+        source = str(self._game.get("source"))
+        app_id = str(self._game.get("app_id"))
+        if self._hidden:
+            db.unhide_game(source, app_id)
+            self._window.toast(_("{game} is back in the list.",
+                                 game=self._name))
+        else:
+            db.hide_game(source, app_id)
+            self._window.toast(
+                _("{game} is hidden. The eye in the header shows hidden "
+                  "games.", game=self._name))
+        GLib.idle_add(lambda: (self._window.refilter(), False)[1])
 
     def _on_lookup(self, *_args: Any) -> None:
         """Ask PCGamingWiki where this game saves. Network, so off the loop."""
@@ -597,6 +636,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._toasts = Adw.ToastOverlay()
         self._groups: list[Adw.PreferencesGroup] = []
+        # The last scan, kept so that hiding a game redraws the list instead
+        # of walking every library again.
+        self._scanned: list[tuple[str, list[dict[str, Any]]]] = []
+        self._show_hidden = False
 
         self._spinner = Adw.StatusPage(title=_("Looking for your games..."))
         self._spinner.set_child(Adw.Spinner() if hasattr(Adw, "Spinner")
@@ -623,6 +666,17 @@ class MainWindow(Adw.ApplicationWindow):
         refresh.set_tooltip_text(_("Look for games again"))
         refresh.connect("clicked", lambda *_a: self.reload())
         header.pack_start(refresh)
+
+        # Appears the moment something is hidden, next to where it was
+        # hidden. A permanent button for a list nobody has ever filtered is
+        # one more thing to explain; a way back that only exists while it is
+        # needed is not.
+        self._hidden_toggle = Gtk.ToggleButton(
+            icon_name="view-conceal-symbolic")
+        self._hidden_toggle.set_tooltip_text(_("Show hidden games"))
+        self._hidden_toggle.set_visible(False)
+        self._hidden_toggle.connect("toggled", self._on_show_hidden)
+        header.pack_start(self._hidden_toggle)
 
         menu = Gio.Menu()
         menu.append(_("Settings"), "app.settings")
@@ -692,13 +746,27 @@ class MainWindow(Adw.ApplicationWindow):
         return scroller
 
     def _build_empty(self) -> Gtk.Widget:
-        page = Adw.StatusPage(
-            icon_name="applications-games-symbolic",
-            title=_("No games found"),
-            description=_("We look for games from Steam, Lutris and Heroic, "
-                          "and for game folders you set up yourself. Install "
-                          "one, then press refresh."))
-        return page
+        self._empty = Adw.StatusPage(icon_name="applications-games-symbolic")
+        self._empty_because_hidden(False)
+        return self._empty
+
+    def _empty_because_hidden(self, hidden: bool) -> None:
+        """An empty list has two reasons; never give the wrong one.
+
+        "No games found" in front of a library the user has just hidden reads
+        as a broken scan, and the way back is the very button that sentence
+        does not mention.
+        """
+        if hidden:
+            self._empty.set_title(_("Every game is hidden"))
+            self._empty.set_description(
+                _("Use the eye in the header bar to show them again."))
+        else:
+            self._empty.set_title(_("No games found"))
+            self._empty.set_description(
+                _("We look for games from Steam, Lutris and Heroic, and for "
+                  "game folders you set up yourself. Install one, then press "
+                  "refresh."))
 
     # --- data ------------------------------------------------------------
     def reload(self) -> None:
@@ -721,20 +789,54 @@ class MainWindow(Adw.ApplicationWindow):
         tasks.run(work, done)
 
     def _show(self, groups: list[tuple[str, list[dict[str, Any]]]]) -> None:
+        self._scanned = groups
+        self._render()
+
+    def refilter(self) -> None:
+        """Redraw the list after a game was hidden or shown.
+
+        The scan itself is not repeated: nothing on disk changed, only which
+        of the games we already found belong on screen.
+        """
+        self._render()
+
+    def _on_show_hidden(self, button: Gtk.ToggleButton) -> None:
+        self._show_hidden = button.get_active()
+        self._render()
+
+    def _render(self) -> None:
         from ..adapters import base
 
         for group in self._groups:
             self._column.remove(group)
         self._groups = []
 
-        for source, games in groups:
+        hidden_keys = set(db.hidden_games())
+        shown = 0
+        for source, games in self._scanned:
+            rows = [(game, base.game_key(game) in hidden_keys)
+                    for game in games]
+            if not self._show_hidden:
+                rows = [(game, False) for game, hidden in rows if not hidden]
+            if not rows:
+                # A launcher whose games are all hidden loses its heading
+                # too, rather than leaving an empty box behind.
+                continue
             group = Adw.PreferencesGroup(title=esc(base.source_label(source)))
-            for game in games:
-                group.add(GameRow(self, game))
+            for game, hidden in rows:
+                group.add(GameRow(self, game, hidden=hidden))
             self._column.append(group)
             self._groups.append(group)
+            shown += len(rows)
 
-        self._stack.set_visible_child_name("list" if groups else "empty")
+        # Kept while the toggle is on even once nothing is hidden any more:
+        # pulling the button out from under the user's pointer mid-cleanup is
+        # not a way back, and the toggle they turned off takes it away anyway.
+        self._hidden_toggle.set_visible(bool(hidden_keys)
+                                        or self._show_hidden)
+        found = sum(len(games) for _s, games in self._scanned)
+        self._empty_because_hidden(bool(found) and not shown)
+        self._stack.set_visible_child_name("list" if shown else "empty")
 
     # --- feedback --------------------------------------------------------
     def toast(self, message: str) -> None:

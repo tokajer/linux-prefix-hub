@@ -187,12 +187,21 @@ def background_tray() -> bool:
     return True if value is None else bool(value)
 
 
-# --- Redirections asked for before there was anything to redirect --------
-# These cannot live in the prefix DB: that is keyed by the prefix, and the
-# whole point of a pending wish is that no prefix exists yet. So the key is
-# "<source>:<app_id>" -- the only identity a game has before it has a folder.
-def pending_key(source: str, app_id: str) -> str:
+def game_key(source: str, app_id: str) -> str:
+    """The identity a game has before it has a folder.
+
+    The prefix DB is keyed by the prefix, which does not exist until the game
+    has run once -- so everything we want to remember about a game *before*
+    that (a wished-for move, a game the user does not want to see) is keyed by
+    this instead, and lives in `config.json`.
+    """
     return f"{source}:{app_id}"
+
+
+# --- Redirections asked for before there was anything to redirect --------
+def pending_key(source: str, app_id: str) -> str:
+    """`game_key` under the name the pending redirects shipped with."""
+    return game_key(source, app_id)
 
 
 def pending_redirects() -> dict[str, Any]:
@@ -227,6 +236,42 @@ def drop_pending_redirect(source: str, app_id: str) -> bool:
         return False
     del pending[key]
     set_config("pending_redirects", pending)
+    return True
+
+
+# --- Games the user does not want to look at -----------------------------
+# Hiding is a statement about the *list*, not about the game: a hidden game
+# keeps its launch hook, its learned storage locations and any move that was
+# asked for, and the wrapper still files what a launch changed. Nothing here
+# is allowed to become "stop managing this" -- a filter that quietly turns
+# features off is a filter nobody dares to use.
+def hidden_games() -> list[str]:
+    """Every hidden game, as `game_key` strings."""
+    value = load_config().get("hidden_games")
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def is_hidden(source: str, app_id: str) -> bool:
+    return game_key(source, app_id) in hidden_games()
+
+
+def hide_game(source: str, app_id: str) -> bool:
+    """Leave a game out of the lists. False if it already was."""
+    key = game_key(source, app_id)
+    hidden = hidden_games()
+    if key in hidden:
+        return False
+    set_config("hidden_games", hidden + [key])
+    return True
+
+
+def unhide_game(source: str, app_id: str) -> bool:
+    """Put it back. False if it was not hidden."""
+    key = game_key(source, app_id)
+    hidden = hidden_games()
+    if key not in hidden:
+        return False
+    set_config("hidden_games", [k for k in hidden if k != key])
     return True
 
 

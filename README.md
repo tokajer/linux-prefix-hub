@@ -164,6 +164,23 @@ WINEPREFIX="$HOME/.wine-osu" "$HOME/.local/bin/linux-prefix-hub-wrapper" wine os
 Everything after that is the same as for any other game: play once, `--status`
 shows what it touched, `--redirect` moves the data into your home folder.
 
+## Hiding games you never want to see
+
+Big libraries have entries you will never touch — a demo, a tool, that one game
+you keep scrolling past. The eye button on a game takes it out of the list, and
+an eye toggle appears in the header bar to bring the hidden ones back when you
+want them:
+
+```bash
+linux-prefix-hub --hide "Steamworks Common"
+linux-prefix-hub --scan --show-hidden       # they are marked [hidden]
+linux-prefix-hub --unhide "Steamworks Common"
+```
+
+Hiding only affects the lists. A hidden game stays connected, keeps everything
+we learned about it, still gets moved if you asked for that, and simply stops
+announcing itself when it is installed or updated.
+
 ## Moving game data into your home folder
 
 ```bash
@@ -251,6 +268,7 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --gui                          the same thing, explicitly
   --terminal                     the overview in the terminal instead
   --scan [--source X]            list games (steam | lutris | heroic | generic)
+  --scan --show-hidden           …including the ones you hid
   --status                       learned storage locations
   --connect GAME                 install the launch hook
   --disconnect GAME              remove it again
@@ -258,6 +276,8 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --redirect GAME [--target P]   move storage into your home folder
   --undo-redirect GAME           move it back
   --open GAME                    show its data folder (or the game folder)
+  --hide GAME                    leave it out of the lists
+  --unhide GAME                  put it back
   --set-data-folder PATH         where moved game data is kept
   --add-game-folder PATH         also look for games there
   --forget-game-folder PATH      stop looking there

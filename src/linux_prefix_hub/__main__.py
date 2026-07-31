@@ -18,6 +18,7 @@ Matches the AppImage concept: ONE artifact, several modes.
   --lookup GAME      ask PCGamingWiki where it stores things, unplayed
   --redirect GAME    move its storage locations into your home
   --open GAME        show its data folder in the file manager
+  --hide GAME        leave it out of the lists (--unhide puts it back)
 
 The three shim modes are dispatched before argparse and with lazy imports, so
 a game launch pays for nothing it does not use.
@@ -60,25 +61,62 @@ def _pick_game(needle: str, source: str | None) -> dict | None:
 
 
 # --- commands ------------------------------------------------------------
-def _cmd_scan(source: str | None) -> int:
+def _cmd_scan(source: str | None, show_hidden: bool = False) -> int:
     from .adapters import base
+    from .core import db
     sources = (source,) if source else None
-    groups = base.group_by_source(
-        base.iter_games(sources))  # type: ignore[arg-type]
-    total = sum(len(games) for _s, games in groups)
-    if not total:
+    found = list(base.iter_games(sources))  # type: ignore[arg-type]
+    listed = found if show_hidden else list(base.visible_games(found))
+    left_out = len(found) - len(listed)
+
+    if not listed:
         print(_("No games found. Is Steam/Lutris/Heroic installed for this "
-                "user?"))
+                "user?") if not left_out
+              else _("All {n} game(s) found are hidden. Add --show-hidden to "
+                     "list them.", n=left_out))
         return 0
-    print(_("{n} game(s) found:", n=total))
-    for src, games in groups:
+
+    hidden_keys = set(db.hidden_games()) if show_hidden else set()
+    print(_("{n} game(s) found:", n=len(listed)))
+    for src, games in base.group_by_source(listed):
         print(f"\n{base.source_label(src)}")
         for g in games:
             state = _("installed") if g.get("installed") else _("downloading")
             prefix = _("ready") if g.get("prefix_path") else _("never started")
             hook = _("connected") if g.get("managed") else _("not connected")
+            flags = f"[{state}] [{prefix}] [{hook}]"
+            if base.game_key(g) in hidden_keys:
+                flags += f" [{_('hidden')}]"
             print(f"  {str(g.get('game_name'))[:34]:<34} "
-                  f"[{state}] [{prefix}] [{hook}] id={g['app_id']}")
+                  f"{flags} id={g['app_id']}")
+    if left_out:
+        print()
+        print(_("{n} hidden game(s) not listed. Add --show-hidden to see "
+                "them.", n=left_out))
+    return 0
+
+
+def _cmd_hide(needle: str, source: str | None, undo: bool) -> int:
+    """Leave a game out of the lists -- or put it back.
+
+    Nothing else changes: the launch hook stays installed, what we learned
+    stays learned and a move that was asked for still happens. This is about
+    a list being too long, not about a game being none of our business.
+    """
+    from .core import db
+    game = _pick_game(needle, source)
+    if not game:
+        return 1
+    src, app_id = str(game["source"]), str(game["app_id"])
+    name = game.get("game_name")
+    if undo:
+        print(_("{game} is back in the list.", game=name)
+              if db.unhide_game(src, app_id)
+              else _("{game} was not hidden.", game=name))
+        return 0
+    print(_("{game} is hidden. --show-hidden lists it again.", game=name)
+          if db.hide_game(src, app_id)
+          else _("{game} is already hidden.", game=name))
     return 0
 
 
@@ -578,6 +616,8 @@ def _build_parser() -> Any:
                    help=_("report that path again"))
     p.add_argument("--source", choices=SOURCES,
                    help=_("limit to one launcher"))
+    p.add_argument("--show-hidden", action="store_true",
+                   help=_("list hidden games too"))
     p.add_argument("--target", metavar="PATH",
                    help=_("where --redirect should move the files"))
 
@@ -602,6 +642,10 @@ def _build_parser() -> Any:
                    help=_("move it back into the game folder"))
     g.add_argument("--open", metavar="GAME",
                    help=_("show a game's data folder in the file manager"))
+    g.add_argument("--hide", metavar="GAME",
+                   help=_("leave a game out of the lists"))
+    g.add_argument("--unhide", metavar="GAME",
+                   help=_("put a hidden game back in the lists"))
     g.add_argument("--integrate", action="store_true",
                    help=_("(re)create shims, service and menu entry"))
     g.add_argument("--check-update", action="store_true",
@@ -649,7 +693,8 @@ def main() -> int:
     parsed = _build_parser().parse_args(args)
 
     other_commands = ("scan", "status", "connect", "disconnect", "lookup",
-                      "redirect", "undo_redirect", "open", "integrate")
+                      "redirect", "undo_redirect", "open", "hide", "unhide",
+                      "integrate")
 
     if parsed.set_language:
         db.set_config("language", parsed.set_language)
@@ -688,7 +733,7 @@ def main() -> int:
     if parsed.terminal:
         return _cmd_terminal()
     if parsed.scan:
-        return _cmd_scan(parsed.source)
+        return _cmd_scan(parsed.source, parsed.show_hidden)
     if parsed.status:
         return _cmd_status()
     if parsed.connect:
@@ -703,6 +748,10 @@ def main() -> int:
         return _cmd_redirect(parsed.undo_redirect, None, undo=True)
     if parsed.open:
         return _cmd_open(parsed.open)
+    if parsed.hide:
+        return _cmd_hide(parsed.hide, parsed.source, undo=False)
+    if parsed.unhide:
+        return _cmd_hide(parsed.unhide, parsed.source, undo=True)
     if parsed.integrate:
         return _cmd_integrate()
     if parsed.check_update:

@@ -181,6 +181,39 @@ The heading also took a word off every row: the game subtitle used to read
 "Steam - ready" and now reads "ready", because the group above it already
 said Steam.
 
+## ✅ Hiding games from the list
+
+A library is not a to-do list. Demos, tools, the Steamworks runtime entries
+and the game somebody installed once are all things you scroll past, and past
+a certain length the list stops being an answer to "which of my games do I
+want to do something about?". So a game can be taken out of it: an eye button
+per row, and an eye toggle in the header that brings the hidden ones back.
+
+The three decisions worth remembering:
+
+- **Hiding is about the list, and nothing else.** A hidden game keeps its
+  launch hook, keeps everything we learned, still gets the move that was asked
+  for, and the wrapper still files what a session changed. The only thing it
+  loses is the row — and the new-game notification, because a notification is
+  the loudest kind of list there is. A filter that quietly turns features off
+  is a filter nobody dares to use, and the first version of this that also
+  skipped `_apply_pending` would have cancelled a move by hiding a row.
+- **So the filter is not in `iter_games`.** `base.visible_games()` is a
+  separate call, made by exactly the two places that draw a list
+  (`MainWindow._render`, `--scan`). The wrapper, `context_for` and the watcher
+  go on seeing everything, which is what makes the point above true rather
+  than merely intended.
+- **The way back has to be where the way out was.** The header toggle appears
+  the moment something is hidden and disappears when nothing is — a permanent
+  button for a list nobody has ever filtered is one more thing to explain. And
+  an empty list has to say *which* kind of empty it is: "No games found" in
+  front of a library the user has just hidden reads as a broken scan, with the
+  cure sitting in a button that sentence does not mention.
+
+Where it lives answers itself the same way `pending_redirects` did: keyed by
+`db.game_key` = `<source>:<app_id>` in `config.json`, because a game can be
+hidden long before it has a prefix to be keyed by.
+
 ## ✅ Tray icon (`gui/tray.py`)
 
 The window is not the app: an update check, a new-game notification and a move

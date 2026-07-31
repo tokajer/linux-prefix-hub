@@ -457,6 +457,79 @@ def test_redirect_before_the_first_launch_is_remembered(monkeypatch, capsys):
     assert db.pending_redirects() == {}
 
 
+# --- Hiding a game from the lists ----------------------------------------
+def _library(monkeypatch):
+    from linux_prefix_hub.adapters import base
+    games = [{"source": "steam", "app_id": "620", "game_name": "Portal 2",
+              "installed": True, "prefix_path": None, "user_dir": None},
+             {"source": "lutris", "app_id": "quake", "game_name": "Quake",
+              "installed": True, "prefix_path": None, "user_dir": None}]
+    monkeypatch.setattr(base, "iter_games",
+                        lambda sources=None: iter(list(games)))
+    return games
+
+
+def test_a_hidden_game_leaves_the_scan(monkeypatch, capsys):
+    from linux_prefix_hub.core import db
+    _library(monkeypatch)
+
+    assert _run(monkeypatch, "--hide", "Portal 2") == 0
+    assert "is hidden" in capsys.readouterr().out
+    assert db.hidden_games() == ["steam:620"]
+
+    assert _run(monkeypatch, "--scan") == 0
+    out = capsys.readouterr().out
+    assert "Portal 2" not in out
+    assert "Quake" in out
+    assert "1 hidden game(s) not listed" in out
+
+
+def test_show_hidden_lists_it_again_and_marks_it(monkeypatch, capsys):
+    _library(monkeypatch)
+    assert _run(monkeypatch, "--hide", "Portal 2") == 0
+    capsys.readouterr()
+
+    assert _run(monkeypatch, "--scan", "--show-hidden") == 0
+    out = capsys.readouterr().out
+    assert "Portal 2" in out
+    assert "[hidden]" in out
+    assert "not listed" not in out           # nothing was left out
+
+
+def test_unhide_finds_a_game_that_is_hidden(monkeypatch, capsys):
+    """`--unhide` has to reach past its own filter, or nothing comes back."""
+    from linux_prefix_hub.core import db
+    _library(monkeypatch)
+    _run(monkeypatch, "--hide", "Portal 2")
+    capsys.readouterr()
+
+    assert _run(monkeypatch, "--unhide", "Portal 2") == 0
+    assert "back in the list" in capsys.readouterr().out
+    assert db.hidden_games() == []
+
+    assert _run(monkeypatch, "--unhide", "Portal 2") == 0
+    assert "was not hidden" in capsys.readouterr().out
+
+
+def test_a_scan_with_everything_hidden_says_why(monkeypatch, capsys):
+    """"No games found" in front of a library nobody lost reads as a bug."""
+    _library(monkeypatch)
+    _run(monkeypatch, "--hide", "Portal 2")
+    _run(monkeypatch, "--hide", "Quake")
+    capsys.readouterr()
+
+    assert _run(monkeypatch, "--scan") == 0
+    out = capsys.readouterr().out
+    assert "No games found" not in out
+    assert "All 2 game(s) found are hidden" in out
+
+
+def test_hiding_an_unknown_game_is_an_error(monkeypatch, capsys):
+    _library(monkeypatch)
+    assert _run(monkeypatch, "--hide", "nothing-like-this") == 1
+    assert "No game found" in capsys.readouterr().out
+
+
 def test_version_flag(monkeypatch, capsys):
     from linux_prefix_hub import __version__
     with pytest.raises(SystemExit) as exc:

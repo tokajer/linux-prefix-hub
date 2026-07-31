@@ -128,6 +128,33 @@ def iter_games(sources: tuple[str, ...] | None = None) -> Iterator[Game]:
             continue
 
 
+def game_key(game: Game) -> str:
+    """`db.game_key` for a discovered game -- `<source>:<app_id>`.
+
+    One place computes this, because it is the identity three different
+    stores agree on (pending moves, hidden games, the watcher's known set).
+    """
+    from ..core import db
+    return db.game_key(str(game.get("source", "")),
+                       str(game.get("app_id", "")))
+
+
+def visible_games(games: Iterable[Game]) -> Iterator[Game]:
+    """Only the games the user has not hidden.
+
+    Deliberately *not* folded into `iter_games`: hiding takes a game out of a
+    list, not out of the app. The launch wrapper, `context_for` and the moves
+    the watcher still has to carry out all have to keep working for a game
+    nobody wants to look at any more -- so the filter sits at the two places
+    that draw a list (the window and `--scan`) and nowhere else.
+    """
+    from ..core import db
+    hidden = set(db.hidden_games())
+    for game in games:
+        if game_key(game) not in hidden:
+            yield game
+
+
 def context_from_env() -> Game | None:
     """Which game is being launched right now? Asks every adapter."""
     for source in SOURCES:

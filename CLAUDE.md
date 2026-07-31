@@ -38,7 +38,7 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `__init__.py` | `__version__`, **derived** — generated `_version.py` (build) > install metadata > `0.0.0+dev`. The release tag is the only version there is |
 | `core/paths.py` | Every persistent path. Constants resolved at **import** time (tests reload it) |
 | `core/i18n.py` | `_()`; English source strings, `locales/de.json` catalog, `LPH_LANG` > config > `LANG` |
-| `core/db.py` | `config.json` (JSON) + `prefixes.db` (**SQLite**, three writers). `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS`; `prune_locations` drops what a filter should have caught, never a user's. Columns for what we query, `extra` JSON for the rest; a pre-SQLite `prefixes.json` is folded in once |
+| `core/db.py` | `config.json` (JSON) + `prefixes.db` (**SQLite**, three writers). `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS`; `prune_locations` drops what a filter should have caught, never a user's. Columns for what we query, `extra` JSON for the rest; a pre-SQLite `prefixes.json` is folded in once. Anything a game can own **before it has a prefix** (`pending_redirects`, `hidden_games`) lives in the config, keyed by `game_key` = `source:app_id` |
 | `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); the `IGNORE_*` filters (shader caches, logs, …) plus the user's own; pending snapshots for the 2-process hook flow |
 | `core/pcgw.py` | PCGamingWiki lookup: article → `{{Game data/…}}` → our locations. Optional, cached, **never on the launch path** (the wrapper reads the cache only) |
 | `core/desktop.py` | Hand a folder to the user's file manager. `xdg-open` first |
@@ -49,14 +49,14 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `core/updater.py` | Velopack: `check`/`download`/`apply`. `app_hook()` only in the AppImage. GearLever wins if present |
 | `core/vdf.py` | Valve KeyValues read **and write** (localconfig round-trip) |
 | `core/yamlite.py` | Lutris-shaped YAML subset; uses PyYAML when installed. **Read only** |
-| `adapters/base.py` | Adapter contract, `iter_games()`, `context_from_env()`, `user_dir_for()` |
+| `adapters/base.py` | Adapter contract, `iter_games()`, `visible_games()` (drops what the user hid — only the two places that draw a list use it), `context_from_env()`, `user_dir_for()` |
 | `adapters/steam.py` | Multi-library discovery; hook = launch options (needs Steam closed, else manual); `cloud_paths()` = Auto-Cloud from `remotecache.vdf` (UFS does not count — those files never enter the prefix) |
 | `adapters/lutris.py` | pga.db + YAML discovery; hook = `prelaunch_command`/`postexit_command` |
 | `adapters/heroic.py` | GamesConfig JSON discovery; hook = `wrapperOptions` (wrap shape, like Steam) |
 | `adapters/generic.py` | Hand-rolled setups: discovery by shape alone, path = id, no config to hook — the user gets a command. Runs **last**, skips what the others claim |
 | `daemon/watcher.py` | inotify on steamapps + periodic rescan; new-game and update notifications |
 | `gui/welcome.py` | Terminal setup flow. Logic split from presentation, shared with the GTK UI |
-| `gui/app.py` | GTK4/libadwaita window: game list grouped per launcher, connect switch, lookup button, game-folder row, move-home switch. Presentation only |
+| `gui/app.py` | GTK4/libadwaita window: game list grouped per launcher, connect switch, lookup button, hide button, game-folder row, move-home switch; the header's eye toggle shows hidden games again. Presentation only |
 | `gui/tray.py` | Tray icon spoken straight onto the session bus (StatusNotifierItem + dbusmenu). **No GTK in it** — AppIndicator is GTK3-linked and would abort a GTK4 process. Degrades to `live == False` |
 | `gui/tasks.py` | One function: run blocking work off the GTK main loop, land the result via `idle_add` |
 
@@ -129,7 +129,7 @@ and never written again — the `migrated_from_json` flag in the DB's `meta`
 table, not the file's absence, is what says the import happened),
 (`config.json` keys: `install_dir`, `redirect_root`, `language`,
 `online_lookup`, `game_folders`, `ignore_paths`, `setup_done`,
-`background_tray`, `pending_redirects`,
+`background_tray`, `pending_redirects`, `hidden_games`,
 `update_check`/`update_notified`),
 `~/.local/share/linux-prefix-hub/LinuxPrefixHub.AppImage`,
 `~/.local/bin/linux-prefix-hub-{wrapper,hook,daemon}`,

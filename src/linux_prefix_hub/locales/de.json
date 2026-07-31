@@ -189,5 +189,22 @@
   "Moving it works -- {launcher} follows the link just like the game does. But if the link is ever lost, {launcher} puts its own copy back into the game folder and there are two versions. We will never pick one for you: {n} file(s) are synced.": "Das Verschieben funktioniert -- {launcher} folgt der Verknüpfung genauso wie das Spiel. Geht die Verknüpfung aber einmal verloren, legt {launcher} seine eigene Kopie zurück in den Spielordner, und es gibt zwei Fassungen. Wir suchen dir keine davon aus: {n} Datei(en) werden abgeglichen.",
   "'{path}' exists in both places: {n} file(s) are in the game folder and in {target} at once. Nothing was changed -- compare the two and delete the copy you do not want.": "'{path}' gibt es zweimal: {n} Datei(en) liegen zugleich im Spielordner und in {target}. Es wurde nichts verändert -- vergleiche beide und lösche die Fassung, die du nicht behalten willst.",
   "Leave it": "So lassen",
-  "Move it anyway": "Trotzdem verschieben"
+  "Move it anyway": "Trotzdem verschieben",
+  "Hide this game from the list": "Dieses Spiel aus der Liste ausblenden",
+  "Show this game in the list again": "Dieses Spiel wieder in der Liste zeigen",
+  "hidden -- {state}": "ausgeblendet -- {state}",
+  "hidden": "ausgeblendet",
+  "Show hidden games": "Ausgeblendete Spiele anzeigen",
+  "Every game is hidden": "Alle Spiele sind ausgeblendet",
+  "Use the eye in the header bar to show them again.": "Mit dem Auge in der Kopfleiste zeigst du sie wieder an.",
+  "{game} is hidden. The eye in the header shows hidden games.": "{game} ist ausgeblendet. Das Auge in der Kopfleiste zeigt ausgeblendete Spiele.",
+  "{game} is back in the list.": "{game} ist wieder in der Liste.",
+  "{game} is hidden. --show-hidden lists it again.": "{game} ist ausgeblendet. Mit --show-hidden wird es wieder aufgelistet.",
+  "{game} is already hidden.": "{game} ist bereits ausgeblendet.",
+  "{game} was not hidden.": "{game} war nicht ausgeblendet.",
+  "All {n} game(s) found are hidden. Add --show-hidden to list them.": "Alle {n} gefundenen Spiele sind ausgeblendet. Mit --show-hidden werden sie aufgelistet.",
+  "{n} hidden game(s) not listed. Add --show-hidden to see them.": "{n} ausgeblendete(s) Spiel(e) nicht aufgelistet. Mit --show-hidden siehst du sie.",
+  "leave a game out of the lists": "ein Spiel aus den Listen heraushalten",
+  "put a hidden game back in the lists": "ein ausgeblendetes Spiel wieder in die Listen holen",
+  "list hidden games too": "auch ausgeblendete Spiele auflisten"
 }

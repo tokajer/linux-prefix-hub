@@ -17,8 +17,9 @@ command).
 | `--hook pre\|post --source S --id ID` | `core.wrapper.hook` | Lutris (via shim) |
 | `--daemon` | `daemon.watcher.run` | systemd (via shim) |
 | `--integrate` | `core.integrate.full_setup` | AppRun (self-heal) |
-| `--scan`, `--status` | listing | user |
+| `--scan [--show-hidden]`, `--status` | listing | user |
 | `--connect`, `--disconnect` | adapter hook | user |
+| `--hide`, `--unhide` | `core.db.hide_game` | user |
 | `--lookup` | `core.pcgw.lookup_and_store` | user |
 | `--open` | `core.desktop.open_folder` | user |
 | `--redirect`, `--undo-redirect` | `core.redirect` | user |
@@ -89,9 +90,12 @@ ever existed.
 `extra_ignore_paths`/`add_ignore_path`/`forget_ignore_path` (path fragments
 that are never a storage location — `core/snapshot.py` applies them),
 `background_tray` (whether closing the window ends the app — default on),
+`game_key` (`source:app_id`),
 `pending_key`/`pending_redirects`/`add_pending_redirect`/
 `drop_pending_redirect` (moves asked for before the game had a folder;
 `core/redirect.py` owns what they mean),
+`hidden_games`/`is_hidden`/`hide_game`/`unhide_game` (games the user does not
+want in the lists),
 `load_prefixes`/`save_prefixes`, `upsert_prefix`, `get_prefix`, `find_prefix`,
 `resolve` (fingerprint | app id | partial name), `update_location`,
 `prune_locations`, `set_managed`.
@@ -105,6 +109,19 @@ last month does not stay a "config" location forever. The predicate comes from
 `core/snapshot.py` — the DB does not know what churn looks like, and snapshot
 does not know what the user decided. Locations with any `LOCATION_USER_FIELDS`
 set are never even offered to it.
+
+`game_key(source, app_id)` is the other identity in this module: the prefix DB
+is keyed by the prefix, which does not exist until the game has run once, so
+everything we want to remember *before* that lives in `config.json` under this
+key instead — a move asked for early (`pending_redirects`) and a game the user
+does not want to see (`hidden_games`). `pending_key` is the same function
+under the name it shipped with.
+
+Hiding is deliberately shallow: it takes a game out of a list and does nothing
+else. The launch hook stays installed, learned locations stay learned, a
+pending move still happens, and the wrapper still files what a session
+changed. A filter that quietly turns features off is a filter nobody dares to
+use.
 
 ### The schema
 
@@ -451,12 +468,19 @@ Lutris adapter so user configs are not reformatted.
 ## `adapters/base.py` — the adapter contract
 
 `SOURCES`, `get_adapter(name)` (lazy import), `iter_games(sources)`,
-`context_from_env()`, `context_for(source, app_id)`, `is_prefix(path)`,
+`visible_games(games)`, `context_from_env()`, `context_for(source, app_id)`,
+`is_prefix(path)`,
 `user_dir_for(prefix)`, `source_label(source)` (the id is internal, the label
 is what the user reads), and `HookResult` (ok / manual / message / detail).
 
 `iter_games` isolates each adapter: a launcher with a broken config drops out
 of the list instead of taking the scan down.
+
+`visible_games` is the hidden-games filter, and it is deliberately *not* part
+of `iter_games`: hiding takes a game out of a list, not out of the app. The
+launch wrapper, `context_for` and the moves the watcher still owes the user
+all have to keep working for a game nobody wants to look at, so exactly the
+two places that draw a list call it — `MainWindow._render` and `--scan`.
 
 The order of `SOURCES` is not cosmetic: `context_from_env` asks in that order,
 `generic` — which claims *any* game folder — must come last, after every
@@ -591,6 +615,12 @@ and not a correctness requirement: `_apply_pending` runs on *every* pass and
 scan and the pending moves from it — asking the adapters twice would stat
 every library and every prefix again.
 
+A hidden game is recorded as known but does not knock: the user took it out of
+the list, and a notification is the loudest kind of list there is. Recording
+it anyway is what keeps unhiding it later quiet. Pending moves are *not*
+filtered that way — a move the user asked for is a decision, and hiding a row
+never cancels one.
+
 **Building on it:** the same hook is where "newly installed" greetings and
 first-launch preparation would go (see the roadmap's install-experience
 layer).
@@ -635,11 +665,28 @@ presentation differs.
 `LocationRow`, `FixedLocationRow`, `PendingRow`, `SettingsDialog`,
 `path_button()`, `open_button()`, `esc()`.
 
-The list is cut by launcher: `MainWindow._show` draws one
+The list is cut by launcher: `MainWindow._render` draws one
 `Adw.PreferencesGroup` per bucket of `base.group_by_source()`, titled with
 `base.source_label()`. Because the heading names the source, `GameRow`'s
 subtitle no longer repeats it ("ready", not "Steam - ready"). The general
 instruction sits once above all the groups instead of once per heading.
+
+`_show` keeps that scan in `_scanned` and `_render` draws it; hiding a game
+only calls `refilter()`, because nothing on disk changed — only which of the
+games we already found belong on screen. Each `GameRow` gets an eye button
+(`db.hide_game`/`unhide_game`), and the header grows an eye *toggle* the
+moment something is hidden: a permanent button for a list nobody has ever
+filtered is one more thing to explain, a way back that exists exactly when it
+is needed is not. With the toggle on, hidden games come back into their own
+groups, dimmed only by their subtitle ("hidden — ready") and carrying the
+reverse button. A launcher whose games are all hidden loses its heading too,
+and an empty list says *which* kind of empty it is: "No games found" in front
+of a library the user has just hidden reads as a broken scan, and the way back
+is the very button that sentence does not mention.
+
+`GameRow._on_hide` defers the redraw with `GLib.idle_add`, because it removes
+the group the clicked button sits in — a widget that destroys itself from
+inside its own signal handler is a crash waiting for the wrong GTK version.
 
 `GameFolderRow` is the first row of every game that has been started once: the
 folder the game itself lives in, with the path selectable (libadwaita 1.3+,
