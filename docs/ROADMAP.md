@@ -366,6 +366,94 @@ now and then, worth keeping openable in an editor.
 Open: `known_games.json` (the watcher's new-game set) is still a file. It has
 one writer, so it has none of this problem.
 
+
+## ✅ Uninstalling (`core/uninstall.py`)
+
+`--uninstall` (with `--keep-settings`), and "Remove Linux Prefix Hub…" in the
+window's menu. The requirement it was written to was "no data loss is key",
+and that turned out to decide the whole shape of the module.
+
+**Uninstalling is not "delete some files"**, because two of the things this
+app did live inside *other* people's configuration and outlive it:
+
+- A **moved folder** is in the home directory, and the game only finds it
+  through a symlink and a registry entry inside its own folder. Delete the app
+  and leave that standing and it works — until Proton recreates the folder,
+  the link goes, and the game starts a fresh save next to one nobody knows
+  about any more.
+- A **launch hook** is a Steam launch option, a Lutris `prelaunch_command`, a
+  Heroic `wrapperOptions`, and each of them names a shim in `~/.local/bin`.
+  Remove the shim while the option still points at it and the game does not
+  start. Not data loss, but the user's library broken by our own cleanup, so
+  it is treated exactly as seriously.
+
+The three decisions worth remembering:
+
+- **A step that fails stops the uninstall where it is.** Revert, disconnect,
+  then delete — and each stage leaves a machine that works: data in the game
+  folder is the default arrangement, and a hook whose shim still exists is a
+  hook that still runs. So stopping is always safe, and "otherwise the
+  uninstallation should not be performed" needs no separate transaction, only
+  the right order. `blockers()` asks the same questions *before* anything
+  moves, because "close Steam" is a sentence to hear first rather than after
+  forty folders have moved.
+- **Undoing a move has to read the DB, not only the symlink.** This was a real
+  hole: `redirect.undo` took its source from the link inside the prefix, so
+  the one case the whole feature exists for — a Proton update that recreated
+  the folder and took the link with it — found nothing to bring back and
+  quietly reset the registry, leaving the saves in a folder nobody points at.
+  `_recorded_target()` is what the prefix forgot. Files that exist on both
+  sides are still merged the usual way (never overwritten, never deleted) and
+  are now *named* in the result, because two versions is a question only the
+  player can answer.
+- **Cleanup is `rmdir` and nothing else.** Never `rmtree` on anything holding
+  game data: `rmdir` refuses on a directory with something left in it, which
+  is exactly the guarantee needed. It also removes our own redirect root
+  (`~/Games/linux-prefix-hub`) once the last game has left it — but never
+  `~/Games`, which is the reason the default put us one level below it, and
+  never a root the user configured.
+
+Open: a hand-installed game has no config to edit — its wrapper sits in a
+launch command the user wrote. Those games are named in the result rather than
+counted as done, which is the honest answer and not a satisfying one.
+
+## ✅ The update that closed the app instead of restarting it
+
+The bug report was "shows restart now, then it does not restart, the app
+closes, and after opening it the update was done". Three separate faults, and
+the first one is why the other two were reachable at all.
+
+**`apply_updates_and_restart` calls `std::process::exit(0)`.** Not documented
+anywhere we could find — it is in the wheel's own machine code, right after
+the call to `wait_exit_then_apply_updates`. The window ran it on a GTK worker
+thread (`gui/tasks.py`), so a successful install killed the process mid-click:
+no message, no `done` callback, no clean shutdown, and the tray icon left
+sitting on the session bus. And when it *failed* it returned an error instead
+— which is the only way that call ever came back.
+
+**So `ok` meant three different things.** `update()` returned `ok=True` for
+"you are up to date" as well as for "installed", and `_on_install_update`
+offered a restart for any `ok` that was not GearLever's. That is the "Restart
+now" the report describes: a dialog about an update that had never been
+downloaded, shown to someone whose app had already updated itself.
+
+**And the restart could not have worked either.** `restart_app()` started the
+AppImage *before* this process exited — but Velopack's helper waits for our
+pid before it replaces anything, so that file was still the old build; and the
+new process then met our own single-instance lock, handed its activation to
+the instance that was about to quit, and exited. Window flashes, app closes,
+nothing comes back.
+
+The fix is to stop hiding the one fact all of this follows from: **an update
+cannot be installed while we are running**, because installing it means
+replacing the file we are executing. So the flow is two halves now —
+`download()` fetches and returns `ready`, `finish()` hands over and *returns*,
+and the caller ends the process. Closing the app is the install step, the
+window says so in those words, and "Later" hands nothing over at all (the
+download waits for `app_hook()`'s auto-apply at the next start). `restart_app`
+is gone: coming back is the helper's job, because by then nobody is left here
+to do it.
+
 ## 🔭 Backlog
 
 - **More languages**: one JSON file each; the machinery is done.

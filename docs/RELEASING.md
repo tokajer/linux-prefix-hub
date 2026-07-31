@@ -76,7 +76,16 @@ Never publish it.
 | Route | Trigger | Mechanism |
 |---|---|---|
 | GearLever | its own UI | it manages the file, we stay out of the way |
-| Built in | `--update`, or the daily check in the watcher | Velopack: `check_for_updates` → `download_updates` → `apply_updates_and_restart` |
+| Built in | `--update`, or the daily check in the watcher | Velopack: `check_for_updates` → `download_updates` → `wait_exit_then_apply_updates` |
+
+**The last step needs the app to be gone**, because installing an update means
+replacing the file that is running. Velopack starts its helper with
+`--waitPid <us>` and it does the work the moment the process ends. So
+`updater.download()` and `updater.finish()` are two calls with the user's
+decision in between, and the window says "close and update" rather than
+pretending it can happen underneath itself. Do **not** reach for the SDK's
+`apply_updates_and_restart` again: it is `std::process::exit(0)` on success,
+which from a GTK worker thread is the window disappearing mid-click.
 
 `core/updater.py` still checks GearLever first: if GearLever manages the
 AppImage we do nothing, because two updaters fighting over one file is worse

@@ -257,6 +257,23 @@ def redirect(fingerprint: str, win_path: str,
                           warning=" ".join(warning) if warning else "")
 
 
+def _recorded_target(entry: dict[str, Any], root: str) -> Path | None:
+    """Where we moved this shell folder to, according to the DB.
+
+    Needed because the symlink is not always still there to ask. A Proton
+    update that recreates the folder takes the link with it and leaves the
+    data in the home folder -- and then reading the destination off the link
+    finds nothing to bring back, while the saves sit in a directory nobody
+    is pointing at any more. The DB remembers what the prefix forgot.
+    """
+    for loc in entry.get("storage_locations", []):
+        if not loc.get("redirect_target"):
+            continue
+        if registry.shell_folder_root(str(loc.get("win_path", ""))) == root:
+            return Path(str(loc["redirect_target"]))
+    return None
+
+
 def undo(fingerprint: str, win_path: str,
          force: bool = False) -> RedirectResult:
     """Put a redirected shell folder back inside the prefix."""
@@ -273,14 +290,16 @@ def undo(fingerprint: str, win_path: str,
                                        "and try again."))
 
     physical = physical_path(entry, root)
-    source = (Path(os.path.realpath(physical))
-              if physical.is_symlink() else None)
+    source = (Path(os.path.realpath(physical)) if physical.is_symlink()
+              else _recorded_target(entry, root))
 
     if physical.is_symlink():
         physical.unlink()
     physical.mkdir(parents=True, exist_ok=True)
-    if source and source.is_dir():
-        _merge_move(source, physical)
+    kept: list[str] = []
+    if (source and source.is_dir()
+            and os.path.realpath(source) != os.path.realpath(physical)):
+        _moved, kept = _merge_move(source, physical)
 
     registry.set_values(
         entry["prefix_path"], registry.SHELL_FOLDERS_KEY,
@@ -296,6 +315,18 @@ def undo(fingerprint: str, win_path: str,
             db.update_location(fingerprint, loc["win_path"],
                                redirected=False, redirect_target=None)
 
+    if kept:
+        # The folder is back, and so is everything that could move into it.
+        # What stayed behind exists on both sides, and `_merge_move` refuses
+        # to pick a winner -- so say where the other copy is instead of
+        # letting the user find out later. Still a success: the game reads
+        # its own folder again either way.
+        return RedirectResult(
+            True,
+            _("Moved back into the game folder. {n} file(s) were already "
+              "there, so their other copy is still in {source}.",
+              n=len(kept), source=str(source)),
+            kept=kept, source=str(source))
     return RedirectResult(True, _("Moved back into the game folder."))
 
 

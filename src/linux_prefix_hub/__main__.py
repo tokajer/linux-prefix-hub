@@ -19,6 +19,7 @@ Matches the AppImage concept: ONE artifact, several modes.
   --redirect GAME    move its storage locations into your home
   --open GAME        show its data folder in the file manager
   --hide GAME        leave it out of the lists (--unhide puts it back)
+  --uninstall        move all game data back, then remove the app
 
 The three shim modes are dispatched before argparse and with lazy imports, so
 a game launch pays for nothing it does not use.
@@ -429,6 +430,84 @@ def _app_name() -> str:
     return paths.APP_NAME
 
 
+def _print_list(heading: str, items: list[str], limit: int = 8) -> None:
+    """A heading and its lines, with a long tail folded into a count."""
+    if not items:
+        return
+    print(heading)
+    for item in items[:limit]:
+        print(f"  {item}")
+    if len(items) > limit:
+        print("  " + _("...and {n} more", n=len(items) - limit))
+
+
+def _cmd_uninstall(assume_yes: bool, keep_settings: bool) -> int:
+    """Remove the app -- but only once the games are back to normal.
+
+    The plan is printed before anything happens, because the interesting
+    part of an uninstall is not what gets deleted: it is which game folders
+    move back and which launcher configs are edited. Both are undone here
+    whether the user asked for that or not, so both are shown first.
+    """
+    from .core import paths, uninstall
+
+    print(_("Removing {app} will:", app=paths.APP_TITLE))
+    preview = uninstall.plan()
+    if preview["games"]:
+        _print_list(_("  move game data back into these games:"),
+                    list(preview["games"]))
+    if preview["connected"]:
+        _print_list(_("  disconnect these games again:"),
+                    [str(g.get("game_name") or g.get("app_id"))
+                     for g in preview["connected"]])
+    _print_list(_("  delete:"), [str(p) for p in preview["files"]],
+                limit=20)
+    if keep_settings:
+        print("  " + _("Settings and what was learned stay in {path}.",
+                       path=preview["config_dir"]))
+    else:
+        print("  " + _("delete {path} (add --keep-settings to keep it)",
+                       path=preview["config_dir"]))
+    if preview["gearlever"]:
+        print("  " + _("GearLever placed the app file, so it stays -- remove "
+                       "it in GearLever."))
+
+    if preview["blockers"]:
+        print()
+        print(_("Not yet:"))
+        for line in preview["blockers"]:
+            print(f"  {line}")
+        print(_("Nothing was changed."))
+        return 1
+
+    if not assume_yes and not _ask(_("Remove {app} now? [y/N] ",
+                                     app=paths.APP_TITLE)):
+        print(_("Nothing was changed."))
+        return 0
+
+    result = uninstall.run(keep_settings=keep_settings)
+    if not result["ok"]:
+        print(result["message"])
+        _print_list("", list(result.get("failed", [])), limit=20)
+        return 1
+
+    print(result["message"])
+    if result["reverted"]:
+        print(_("{n} folder(s) are back in their game.",
+                n=len(result["reverted"])))
+    _print_list(_("Both copies were kept here:"),
+                list(result.get("notes", [])), limit=20)
+    if result.get("manual"):
+        print(_("You started these yourself -- take '{shim}' back out of "
+                "your own launch command: {games}",
+                shim=str(paths.WRAPPER_SHIM),
+                games=", ".join(result["manual"])))
+    if result["kept_settings"]:
+        print(_("Settings and what was learned stay in {path}.",
+                path=str(paths.CONFIG_DIR)))
+    return 0
+
+
 def _cmd_integrate() -> int:
     from .core import integrate
     for key, value in integrate.full_setup(enable_watcher=True).items():
@@ -665,6 +744,8 @@ def _build_parser() -> Any:
                    help=_("accept what --lookup suggests without asking"))
     p.add_argument("--target", metavar="PATH",
                    help=_("where --redirect should move the files"))
+    p.add_argument("--keep-settings", action="store_true",
+                   help=_("with --uninstall: keep what was learned"))
 
     g = p.add_mutually_exclusive_group()
     g.add_argument("--gui", action="store_true",
@@ -693,6 +774,8 @@ def _build_parser() -> Any:
                    help=_("put a hidden game back in the lists"))
     g.add_argument("--integrate", action="store_true",
                    help=_("(re)create shims, service and menu entry"))
+    g.add_argument("--uninstall", action="store_true",
+                   help=_("move all game data back, then remove the app"))
     g.add_argument("--check-update", action="store_true",
                    help=_("ask GitHub whether a newer version exists"))
     g.add_argument("--update", action="store_true",
@@ -739,7 +822,7 @@ def main() -> int:
 
     other_commands = ("scan", "status", "connect", "disconnect", "lookup",
                       "redirect", "undo_redirect", "open", "hide", "unhide",
-                      "integrate")
+                      "integrate", "uninstall")
 
     if parsed.set_language:
         db.set_config("language", parsed.set_language)
@@ -799,6 +882,8 @@ def main() -> int:
         return _cmd_hide(parsed.unhide, parsed.source, undo=True)
     if parsed.integrate:
         return _cmd_integrate()
+    if parsed.uninstall:
+        return _cmd_uninstall(parsed.yes, parsed.keep_settings)
     if parsed.check_update:
         return _cmd_update(install=False)
     if parsed.update:

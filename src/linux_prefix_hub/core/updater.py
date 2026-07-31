@@ -19,6 +19,13 @@ Two things stay true regardless:
 uses it to finish an update that is waiting and to fire first-run/restart
 callbacks; skipping it means updates never get applied.
 
+**An update cannot be installed while we are running**, because installing it
+means replacing the file we are executing. Velopack's helper is started with
+`--waitPid <us>` and does its work the moment this process is gone. Every
+awkward thing about `download()`/`finish()` below follows from that one fact,
+and it is why closing the app *is* the install step rather than something that
+happens after it.
+
 The `velopack` wheel is a hard dependency of the AppImage build. A plain
 `pip install linux-prefix-hub` without it still works -- every entry point
 here degrades to an honest "not available" message.
@@ -217,83 +224,160 @@ def check(force: bool = False) -> dict[str, Any]:
     return {**result, "cached": False}
 
 
-def update(force: bool = False) -> dict[str, Any]:
-    """Download and apply the newest release. Returns {ok, message}.
+# --- Installing one, in two halves ---------------------------------------
+# `download()` fetches, `finish()` hands over, and the caller ends the
+# process. The SDK has a one-liner for all three -- and it is the reason this
+# is written out longhand.
+#
+# `apply_updates_and_restart` calls `std::process::exit(0)` when it succeeds
+# (it is right there in the wheel's own machine code, after the call to
+# `wait_exit_then_apply_updates`). From the window that runs on a GTK worker
+# thread, so the whole process dies mid-click: no message, no `done`
+# callback, no clean GTK shutdown, and a tray icon left behind on the session
+# bus. And when it *fails* it returns an error instead -- which the window
+# then reported as "Update installed. Restart now", because the caller had no
+# way to tell "there was nothing to install" from "it is installed".
+#
+# So: nothing here ever ends the process, and `ready`/`staged` say what
+# actually happened rather than leaving `ok` to mean three different things.
+_STAGED: dict[str, Any] = {}
 
-    On success the app restarts into the new version, so this call does not
-    return -- anything after `apply_updates_and_restart` is an error path.
+
+def _pending_asset(manager: Any) -> Any | None:
+    """A package that is downloaded and only waiting for us to exit.
+
+    The fallback for a `finish()` that did not do the `download()` itself --
+    a second window, or a `--update` after the download was interrupted.
+    Asking Velopack beats a second network round trip.
+    """
+    ask = getattr(manager, "get_update_pending_restart", None)
+    if ask is None:
+        return None
+    try:
+        return ask()
+    except Exception:
+        return None
+
+
+def download(force: bool = False) -> dict[str, Any]:
+    """Fetch the newest release. Nothing we are running changes yet.
+
+    Returns {ok, ready, version, message} (plus `skipped` for GearLever).
+    **`ready` is the only key that means there is something to install** --
+    "you are up to date" is `ok` too, and conflating the two is what put an
+    "Update installed" dialog in front of users who had just been told they
+    were current.
     """
     from .i18n import _
 
-    if integrate.detect_gearlever():
-        return {"ok": True, "message": _("Updates are handled by GearLever on "
-                                         "this system."), "skipped": True}
+    _STAGED.clear()
+    none = {"ok": False, "ready": False, "version": ""}
 
+    if integrate.detect_gearlever():
+        return {**none, "ok": True, "skipped": True,
+                "message": _("Updates are handled by GearLever on this "
+                             "system.")}
     if not available():
-        return {"ok": False,
+        return {**none,
                 "message": _("Automatic updates are only available for the "
                              "AppImage build. Use pip/pipx to update this "
                              "installation.")}
-
     manager = _manager()
     if manager is None:
-        return {"ok": False,
+        return {**none,
                 "message": _("This build cannot update itself. Download the "
                              "latest version from {url}.", url=repo_url())}
 
     try:
         info = manager.check_for_updates()
     except Exception as exc:
-        return {"ok": False, "message": _("Update failed: {error}",
-                                          error=str(exc))}
-    if info is None and not force:
-        return {"ok": True, "message": _("You are up to date ({version}).",
-                                         version=__version__)}
+        return {**none, "message": _("Update failed: {error}",
+                                     error=str(exc))}
     if info is None:
-        return {"ok": False, "message": _("Could not reach GitHub.")}
+        return {**none, "ok": True, "version": __version__,
+                "message": _("You are up to date ({version}).",
+                             version=__version__)}
 
     version = str(info.TargetFullRelease.Version)
+    if not force and not is_newer(version):
+        return {**none, "ok": True, "version": __version__,
+                "message": _("You are up to date ({version}).",
+                             version=__version__)}
     try:
         manager.download_updates(info)
-        # Keep the shims pointing at the binary before we hand over control.
-        integrate.install_shims()
-        manager.apply_updates_and_restart(info)
     except Exception as exc:
-        return {"ok": False, "message": _("Update failed: {error}",
-                                          error=str(exc))}
-    return {"ok": True,
-            "message": _("Updated to {version}. Restart the app to use it.",
+        return {**none, "version": version,
+                "message": _("Update failed: {error}", error=str(exc))}
+
+    _STAGED.update(manager=manager, info=info, version=version)
+    return {"ok": True, "ready": True, "version": version,
+            "message": _("Version {version} is ready to install.",
                          version=version)}
 
 
-def restart_app() -> bool:
-    """Start the freshly updated app and let this process finish.
+def finish(restart: bool = True) -> dict[str, Any]:
+    """Hand the downloaded package over -- and come back.
 
-    Velopack's `apply_updates_and_restart` does not always come back as a
-    restart -- when it returns instead, the window is still running the old
-    code, still showing the old version, and the user is left restarting by
-    hand. So we offer to do it.
+    Velopack's helper waits for *this* process to end before it replaces the
+    file we are executing, so this call changes nothing on its own: the
+    caller has to exit, and until it does the app is still the old version.
 
-    A new process rather than `execv`: the AppImage mount belongs to this pid
-    and has to be released, and the new build brings its own. The child gets
-    `desktop.child_env()` for the reason in CLAUDE.md rule 4 -- our bundle's
-    `PYTHONHOME` points into a /tmp mount that is about to disappear.
+    `restart` asks the helper to start us again afterwards. That is the only
+    way there is to come back: by the time the new build exists on disk,
+    nobody is left here to launch it. Starting something ourselves before
+    exiting would start the *old* binary -- and run straight into our own
+    single-instance lock, which is what the window used to do and why
+    "Restart now" only ever closed the app.
+
+    VERIFY-ON-DEVICE: that the helper's `--restart` really brings an AppImage
+    back. If it does not, nothing is lost -- `app_hook()` applies what is
+    waiting on the next start.
     """
-    import os
-    import subprocess
-    from pathlib import Path
+    from .i18n import _
 
-    from . import desktop
+    manager = _STAGED.get("manager") or _manager()
+    if manager is None:
+        return {"ok": False,
+                "message": _("This build cannot update itself. Download the "
+                             "latest version from {url}.", url=repo_url())}
 
-    appimage = os.environ.get("APPIMAGE")
-    if not appimage or not Path(appimage).exists():
-        return False            # not the packaged build: nothing to restart
+    info = _STAGED.get("info") or _pending_asset(manager)
+    hand_over = getattr(manager, "wait_exit_then_apply_updates", None)
+    if info is None or hand_over is None:
+        return {"ok": False,
+                "message": _("Nothing has been downloaded yet.")}
+
+    version = str(_STAGED.get("version") or "")
     try:
-        subprocess.Popen([appimage, "--gui"], start_new_session=True,
-                         env=desktop.child_env())
-    except OSError:
-        return False
-    return True
+        # Last thing we do while we still exist: the shims point at a fixed
+        # path, and the new build has to find them the way it left them.
+        integrate.install_shims()
+        hand_over(info, silent=True, restart=restart)
+    except Exception as exc:
+        return {"ok": False, "message": _("Update failed: {error}",
+                                          error=str(exc))}
+    _STAGED.clear()
+    return {"ok": True, "version": version,
+            "message": _("Version {version} is installed as {app} closes.",
+                         version=version, app=paths.APP_TITLE)}
+
+
+def update(restart: bool = False) -> dict[str, Any]:
+    """Both halves in one go -- what `--update` does.
+
+    Returns {ok, staged, version, message}. `staged` says an update was
+    really handed over; `ok` on its own can just as well mean there was
+    nothing to do.
+
+    `restart` defaults to False here because the caller is a terminal
+    command: finishing it by opening a window is not what anyone typed.
+    """
+    got = download()
+    if not got["ok"] or not got.get("ready"):
+        return {**got, "staged": False}
+    done = finish(restart=restart)
+    return {**done, "staged": bool(done["ok"]),
+            "version": got.get("version", "")}
 
 
 def installed_path() -> Any:

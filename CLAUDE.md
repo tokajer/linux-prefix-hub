@@ -46,7 +46,8 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
 | `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals. `cloud_warning()` names the other writer on that folder before the move |
 | `core/integrate.py` | AppImage relocation, the three shims, systemd unit, desktop entry. Idempotent |
-| `core/updater.py` | Velopack: `check`/`download`/`apply`. `app_hook()` only in the AppImage. GearLever wins if present |
+| `core/updater.py` | Velopack: `check`, then `download()` / `finish()` — two halves because an update can only be applied once **this process is gone**. `app_hook()` only in the AppImage. GearLever wins if present |
+| `core/uninstall.py` | Remove the app: revert every moved folder, disconnect every hook, *then* delete. A failed step stops the whole thing |
 | `core/vdf.py` | Valve KeyValues read **and write** (localconfig round-trip) |
 | `core/yamlite.py` | Lutris-shaped YAML subset; uses PyYAML when installed. **Read only** |
 | `adapters/base.py` | Adapter contract, `iter_games()`, `visible_games()` (drops what the user hid — only the two places that draw a list use it), `context_from_env()`, `user_dir_for()` |
@@ -123,6 +124,21 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
     not have is never written, created or redirected — otherwise a storage
     location is invented out of an article and the first thing the user does
     with it is move data into it.
+13. **An update cannot be installed while we run, and nothing may end the
+    process behind the caller's back.** Installing means replacing the file
+    we are executing, so Velopack's helper waits for our pid — which is why
+    `updater.download()` and `updater.finish()` are two calls and the *caller*
+    does the exiting. The SDK's `apply_updates_and_restart` is
+    `std::process::exit(0)` on success and an error return on failure; from a
+    GTK worker thread that is the window vanishing mid-click. Nor can we
+    restart ourselves: anything started before we exit starts the *old* build
+    and collides with our own single-instance lock.
+14. **Removing the app is the redirect in reverse, and it comes first.** A
+    moved folder and a launch hook both live in someone else's config, so
+    `uninstall.run()` reverts and disconnects before it deletes anything, and
+    a step that fails stops it there — each stage on its own leaves a machine
+    that works. Cleanup is `rmdir` only, never `rmtree` on anything that
+    could hold game data.
 
 ## Adding a launcher
 

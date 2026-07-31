@@ -691,6 +691,55 @@ def test_terminal_flag_skips_the_window(monkeypatch, capsys):
     assert "--scan" in capsys.readouterr().out
 
 
+def test_uninstall_shows_the_plan_and_asks_first(monkeypatch, capsys,
+                                                 fake_prefix):
+    """The interesting part of an uninstall is not what gets deleted.
+
+    It is which game folders move back and which launcher configs get
+    edited -- both happen whether the user thought to ask for them or not,
+    so both are on screen before the question.
+    """
+    from linux_prefix_hub.core import db, paths
+    db.upsert_prefix({
+        "source": "steam", "app_id": "2310", "game_name": "Quake",
+        "prefix_path": str(fake_prefix), "user_dir": "steamuser",
+        "storage_locations": [{"type": "saves", "win_path": "Documents/Q",
+                               "redirected": True,
+                               "redirect_target": "/home/me/Games/Q"}],
+    })
+    paths.WRAPPER_SHIM.parent.mkdir(parents=True, exist_ok=True)
+    paths.WRAPPER_SHIM.write_text("#!/bin/sh\n")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    assert _run(monkeypatch, "--uninstall") == 0
+
+    out = capsys.readouterr().out
+    assert "Quake" in out
+    assert str(paths.WRAPPER_SHIM) in out
+    assert "Nothing was changed." in out
+    assert paths.WRAPPER_SHIM.exists()          # answered no, so nothing went
+
+
+def test_uninstall_refuses_while_a_game_is_running(monkeypatch, capsys,
+                                                   fake_prefix):
+    from linux_prefix_hub.core import db, registry
+    db.upsert_prefix({
+        "source": "steam", "app_id": "2310", "game_name": "Quake",
+        "prefix_path": str(fake_prefix), "user_dir": "steamuser",
+        "storage_locations": [{"type": "saves", "win_path": "Documents/Q",
+                               "redirected": True,
+                               "redirect_target": "/home/me/Games/Q"}],
+    })
+    monkeypatch.setattr(registry, "prefix_in_use", lambda prefix: True)
+    monkeypatch.setattr("builtins.input",
+                        lambda _p="": pytest.fail("asked anyway"))
+
+    assert _run(monkeypatch, "--uninstall") == 1
+    out = capsys.readouterr().out
+    assert "Quake is running" in out
+    assert "Nothing was changed." in out
+
+
 def test_handover_env_drops_pythonhome(monkeypatch):
     """PYTHONHOME points at the bundled interpreter; inheriting it makes any
     other interpreter load the wrong standard library."""

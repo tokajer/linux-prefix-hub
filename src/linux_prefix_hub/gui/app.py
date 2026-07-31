@@ -750,6 +750,10 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append(_("Settings"), "app.settings")
         menu.append(_("Check for updates"), "app.check-update")
         menu.append(_("Repair setup"), "app.integrate")
+        # After "Repair setup", so `_update_item` keeps its index: a GMenu
+        # item can only be replaced by position (see `offer_update`).
+        menu.append(_("Remove {app}...", app=paths.APP_TITLE),
+                    "app.uninstall")
         menu.append(_("About"), "app.about")
         # Remembered so the update entry can turn into "install" once a
         # check found something -- a GMenu item cannot be relabelled, only
@@ -953,6 +957,7 @@ class LphApplication(Adw.Application):
                               ("check-update", self._on_check_update),
                               ("install-update", self._on_install_update),
                               ("integrate", self._on_integrate),
+                              ("uninstall", self._on_uninstall),
                               ("about", self._on_about),
                               ("quit", lambda *_a: self.quit())):
             action = Gio.SimpleAction.new(name, None)
@@ -1102,15 +1107,21 @@ class LphApplication(Adw.Application):
         tasks.run(work, done)
 
     def _on_install_update(self, *_args: Any) -> None:
-        """Download and apply. Velopack restarts the app, so on success this
-        never comes back -- everything below `done` is an error path."""
+        """Download it. Putting it in place is a second, separate step.
+
+        Only `ready` may lead to that step. The version this replaces asked
+        the same question of `ok`, which is also what "you are up to date"
+        and "GearLever handles this" answer -- so clicking the entry after
+        an update had already been installed produced an "Update installed,
+        restart now" dialog for an update that never existed.
+        """
         window = self._window
         if window is not None:
             window.toast(_("Downloading the update..."))
 
         def work() -> Any:
             from ..core import updater
-            return updater.update()
+            return updater.download()
 
         def done(result: Any, error: Exception | None) -> None:
             if window is None:
@@ -1118,41 +1129,49 @@ class LphApplication(Adw.Application):
             if error is not None:
                 window.toast(_("Update failed: {error}", error=str(error)))
                 return
-            if not result.get("ok"):
-                window.toast(str(result.get("message", "")))
-                window.offer_update(None)      # let them try again
-                return
-            # We are still the old code: the window cannot show the new
-            # version, so say so and offer the restart instead of leaving
-            # the user to work it out.
             window.offer_update(None)
-            if result.get("skipped"):           # GearLever handles it
+            if not result.get("ready"):
+                # Up to date, GearLever's business, or a failure. None of
+                # the three is an update waiting to be installed.
                 window.toast(str(result.get("message", "")))
-            else:
-                self._offer_restart(window)
+                return
+            self._finish_update(window, str(result.get("version") or ""))
 
         tasks.run(work, done)
 
-    def _offer_restart(self, window: MainWindow) -> None:
+    def _finish_update(self, window: MainWindow, version: str) -> None:
+        """The half that can only happen while we are *not* running.
+
+        Installing means replacing the file we are executing, so Velopack's
+        helper waits for this process to end. That is why closing the app is
+        the install step and not something that follows it -- and why this
+        is a question rather than a progress bar.
+        """
         dialog = Adw.AlertDialog(
-            heading=_("Update installed"),
-            body=_("The window is still running the old version. Restart to "
-                   "use the new one."))
+            heading=_("Update ready"),
+            body=_("Version {version} is downloaded. {app} has to close to "
+                   "put it in place, and starts again by itself when it is "
+                   "done.", version=version, app=paths.APP_TITLE))
         dialog.add_response("later", _("Later"))
-        dialog.add_response("restart", _("Restart now"))
-        dialog.set_response_appearance("restart",
+        dialog.add_response("finish", _("Close and update"))
+        dialog.set_response_appearance("finish",
                                        Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("restart")
+        dialog.set_default_response("finish")
 
         def on_response(_dialog: Any, response: str) -> None:
-            if response != "restart":
+            if response != "finish":
+                # Nothing was handed over, so this app's next exit is an
+                # ordinary one. The download stays where it is and the next
+                # start picks it up (`updater.app_hook`).
+                window.toast(_("The update is installed the next time you "
+                               "start {app}.", app=paths.APP_TITLE))
                 return
             from ..core import updater
-            if updater.restart_app():
-                self.quit()
-            else:
-                window.toast(_("Could not restart. Please start {app} again.",
-                               app=paths.APP_TITLE))
+            result = updater.finish(restart=True)
+            if not result.get("ok"):
+                window.toast(str(result.get("message", "")))
+                return
+            self.quit()
 
         dialog.connect("response", on_response)
         dialog.present(window)
@@ -1162,6 +1181,137 @@ class LphApplication(Adw.Application):
         if window is None:
             return
         self._run_setup(window)
+
+    # --- removing the app -------------------------------------------------
+    def _on_uninstall(self, *_args: Any) -> None:
+        """Ask first, and ask with the plan in hand.
+
+        The plan walks every library and every prefix, so it goes off the
+        main loop like any other scan. Showing a confirmation before knowing
+        what there is to confirm would mean asking "remove everything?" and
+        only then finding out that a game is running.
+        """
+        window = self._window
+        if window is None:
+            return
+        window.toast(_("Checking what has to be moved back..."))
+
+        def work() -> Any:
+            from ..core import uninstall
+            return uninstall.plan()
+
+        def done(preview: Any, error: Exception | None) -> None:
+            if window is None:
+                return
+            if error is not None:
+                window.toast(_("Something went wrong: {error}",
+                               error=str(error)))
+                return
+            if preview["blockers"]:
+                self._uninstall_blocked(window, list(preview["blockers"]))
+                return
+            self._confirm_uninstall(window, preview)
+
+        tasks.run(work, done)
+
+    def _uninstall_blocked(self, window: MainWindow,
+                           reasons: list[str]) -> None:
+        """Say what is in the way -- and offer nothing else.
+
+        A dialog with a "remove anyway" button next to this text would be a
+        button that leaves a game's data in a folder the game no longer
+        points at.
+        """
+        dialog = Adw.AlertDialog(
+            heading=_("Not right now"),
+            body="\n".join(reasons) + "\n\n"
+                 + _("Nothing was changed."))
+        dialog.add_response("ok", _("Close"))
+        dialog.set_default_response("ok")
+        dialog.present(window)
+
+    def _confirm_uninstall(self, window: MainWindow,
+                           preview: dict[str, Any]) -> None:
+        lines = []
+        if preview["games"]:
+            lines.append(_("{n} game(s) get their data moved back into the "
+                           "game folder.", n=len(preview["games"])))
+        if preview["connected"]:
+            lines.append(_("{n} game(s) are disconnected again.",
+                           n=len(preview["connected"])))
+        lines.append(_("{n} file(s) that {app} installed are deleted.",
+                       n=len(preview["files"]), app=paths.APP_TITLE))
+        if preview["gearlever"]:
+            lines.append(_("GearLever placed the app file, so it stays -- "
+                           "remove it in GearLever."))
+
+        dialog = Adw.AlertDialog(heading=_("Remove {app}?",
+                                           app=paths.APP_TITLE),
+                                 body="\n".join(lines))
+        keep = Gtk.CheckButton(
+            label=_("Keep what {app} learned about your games",
+                    app=paths.APP_TITLE),
+            margin_top=6)
+        dialog.set_extra_child(keep)
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("remove", _("Remove"))
+        dialog.set_response_appearance("remove",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(_d: Any, response: str) -> None:
+            if response != "remove":
+                return
+            self._run_uninstall(window, keep.get_active())
+
+        dialog.connect("response", on_response)
+        dialog.present(window)
+
+    def _run_uninstall(self, window: MainWindow, keep_settings: bool) -> None:
+        window.toast(_("Moving your game data back..."))
+
+        def work() -> Any:
+            from ..core import uninstall
+            return uninstall.run(keep_settings=keep_settings)
+
+        def done(result: Any, error: Exception | None) -> None:
+            if window is None:
+                return
+            if error is not None:
+                window.toast(_("Something went wrong: {error}",
+                               error=str(error)))
+                return
+            if not result["ok"]:
+                self._uninstall_blocked(
+                    window, [str(result["message"])]
+                    + list(result.get("failed", [])))
+                return
+            self._uninstall_done(window, result)
+
+        tasks.run(work, done)
+
+    def _uninstall_done(self, window: MainWindow,
+                        result: dict[str, Any]) -> None:
+        """The last thing this app ever shows. Then it closes for good."""
+        lines = [_("{n} folder(s) are back in their game.",
+                   n=len(result["reverted"]))]
+        lines += [str(note) for note in result.get("notes", [])]
+        if result.get("manual"):
+            lines.append(_("You started these yourself -- take '{shim}' back "
+                           "out of your own launch command: {games}",
+                           shim=str(paths.WRAPPER_SHIM),
+                           games=", ".join(result["manual"])))
+        if result["kept_settings"]:
+            lines.append(_("Settings and what was learned stay in {path}.",
+                           path=str(paths.CONFIG_DIR)))
+
+        dialog = Adw.AlertDialog(heading=str(result["message"]),
+                                 body="\n".join(lines))
+        dialog.add_response("quit", _("Close"))
+        dialog.set_default_response("quit")
+        dialog.connect("response", lambda *_a: self.quit())
+        dialog.present(window)
 
     def _on_about(self, *_args: Any) -> None:
         from .. import __version__

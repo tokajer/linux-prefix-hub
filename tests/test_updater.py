@@ -23,13 +23,21 @@ class _Info:
 
 
 class FakeManager:
-    """Stands in for velopack.UpdateManager."""
+    """Stands in for velopack.UpdateManager.
+
+    Note what it deliberately does *not* have: `apply_updates_and_restart`.
+    The real one ends the process with `std::process::exit(0)` when it
+    succeeds, so nothing here may reach for it -- a test that passes against
+    a fake of that call would be testing a code path that, in the packaged
+    build, never returns.
+    """
 
     def __init__(self, version: str | None = "9.9.9", *,
                  fail_on: str | None = None) -> None:
         self._version = version
         self._fail_on = fail_on
         self.calls: list[str] = []
+        self.handover: dict[str, object] = {}
 
     def _maybe_fail(self, name: str) -> None:
         self.calls.append(name)
@@ -43,14 +51,18 @@ class FakeManager:
     def download_updates(self, info, progress_callback=None):
         self._maybe_fail("download")
 
-    def apply_updates_and_restart(self, info):
-        self._maybe_fail("apply")
+    def wait_exit_then_apply_updates(self, info, silent=False, restart=True,
+                                     restart_args=None):
+        self._maybe_fail("hand over")
+        self.handover = {"info": info, "silent": silent, "restart": restart}
 
 
 @pytest.fixture
 def fake_velopack(monkeypatch):
     """Install a FakeManager and report the SDK as present."""
     from linux_prefix_hub.core import updater
+
+    updater._STAGED.clear()
 
     def install(manager):
         monkeypatch.setattr(updater, "_manager", lambda: manager)
@@ -59,7 +71,8 @@ def fake_velopack(monkeypatch):
                             lambda: None)
         return manager
 
-    return install
+    yield install
+    updater._STAGED.clear()
 
 
 # --- versions ------------------------------------------------------------
@@ -181,12 +194,79 @@ def test_update_downloads_then_hands_over(fake_velopack):
 
     result = updater.update()
 
-    assert result["ok"] is True
+    assert result["ok"] is True and result["staged"] is True
     assert "9.9.9" in result["message"]
-    # Order matters: download, then swap, and the shims must be rewritten
-    # before we hand control to Velopack's restart.
-    assert manager.calls == ["check", "download", "apply"]
+    # Order matters: download, then hand over, and the shims must be
+    # rewritten while we are still the ones running.
+    assert manager.calls == ["check", "download", "hand over"]
     assert paths.WRAPPER_SHIM.exists()
+    # Nothing is applied while we live, so nothing here may end the process
+    # -- the caller exits and Velopack's helper takes it from there.
+    assert manager.handover["silent"] is True
+
+
+def test_download_alone_installs_nothing(fake_velopack):
+    """Two halves on purpose: the download is safe, the hand-over is not.
+
+    The window has to be able to fetch a release, tell the user, and let
+    them decide when the app may close -- because closing it *is* the
+    install step.
+    """
+    from linux_prefix_hub.core import updater
+    manager = fake_velopack(FakeManager("9.9.9"))
+
+    got = updater.download()
+
+    assert got["ok"] is True and got["ready"] is True
+    assert got["version"] == "9.9.9"
+    assert manager.calls == ["check", "download"]
+
+    assert updater.finish(restart=True)["ok"] is True
+    assert manager.calls == ["check", "download", "hand over"]
+    assert manager.handover["restart"] is True
+
+
+def test_up_to_date_is_never_something_to_install(fake_velopack):
+    """The bug this comes from: `update()` answered "you are up to date"
+    with ok=True, the window read ok as "installed" and offered to restart
+    into a version it had never downloaded."""
+    from linux_prefix_hub.core import updater
+    fake_velopack(FakeManager(None))
+
+    got = updater.download()
+    assert got["ok"] is True and got["ready"] is False
+    assert updater.__version__ in got["message"]
+
+    result = updater.update()
+    assert result["ok"] is True and result["staged"] is False
+
+
+def test_a_release_we_already_are_is_not_ready_either(fake_velopack,
+                                                      monkeypatch):
+    from linux_prefix_hub.core import updater
+    monkeypatch.setattr(updater, "__version__", "9.9.9")
+    manager = fake_velopack(FakeManager("9.9.9"))
+    assert updater.download()["ready"] is False
+    assert "download" not in manager.calls
+
+
+def test_finish_without_a_download_says_so(fake_velopack):
+    from linux_prefix_hub.core import updater
+    fake_velopack(FakeManager("9.9.9"))
+    result = updater.finish()
+    assert result["ok"] is False
+    assert "downloaded" in result["message"]
+
+
+def test_finish_picks_up_a_package_that_is_already_waiting(fake_velopack):
+    """A second window, or an interrupted `--update`: Velopack knows what
+    is staged, so we ask it instead of downloading again."""
+    from linux_prefix_hub.core import updater
+    manager = fake_velopack(FakeManager("9.9.9"))
+    manager.get_update_pending_restart = lambda: _Asset("9.9.9")
+
+    assert updater.finish()["ok"] is True
+    assert manager.calls == ["hand over"]
 
 
 def test_update_reports_a_failed_download(fake_velopack):
@@ -195,9 +275,9 @@ def test_update_reports_a_failed_download(fake_velopack):
 
     result = updater.update()
 
-    assert result["ok"] is False
+    assert result["ok"] is False and result["staged"] is False
     assert "boom" in result["message"]
-    assert "apply" not in manager.calls          # nothing was swapped
+    assert "hand over" not in manager.calls      # nothing was handed over
 
 
 def test_update_says_up_to_date_when_there_is_nothing(fake_velopack):
@@ -214,6 +294,7 @@ def test_update_defers_to_gearlever(monkeypatch, tmp_path):
                         lambda: tmp_path / "x.AppImage")
     result = updater.update()
     assert result["ok"] is True and result["skipped"] is True
+    assert result["staged"] is False
     assert "GearLever" in result["message"]
 
 
@@ -400,38 +481,27 @@ def test_no_locator_is_invented_outside_the_bundle(monkeypatch, tmp_path):
 
 
 # --- restarting after an update ------------------------------------------
-def test_restart_starts_the_new_build_without_our_bundle(monkeypatch,
-                                                         tmp_path):
-    """Velopack's own restart does not always come back as one, and then the
-    window still runs the old code. The child must not inherit the bundle:
-    PYTHONHOME points into a mount that is about to disappear."""
+def test_the_restart_is_velopacks_and_nobody_starts_anything_here(
+        fake_velopack, monkeypatch, tmp_path):
+    """We cannot restart ourselves, and trying is what broke this.
+
+    Nothing exists to start until this process is gone -- the helper waits
+    for our pid before it replaces the file we are executing. Starting the
+    AppImage beforehand starts the *old* build, and lands on our own
+    single-instance lock, so the new process hands its activation to the
+    one that is about to quit and disappears. Symptom: "Restart now" closes
+    the app and nothing comes back.
+    """
     import subprocess
 
     from linux_prefix_hub.core import updater
-    appimage = tmp_path / "App.AppImage"
-    appimage.write_text("#!/bin/true\n")
-    monkeypatch.setenv("APPIMAGE", str(appimage))
-    monkeypatch.setenv("APPDIR", "/tmp/.mount_x")
-    monkeypatch.setenv("PYTHONHOME", "/tmp/.mount_x/opt/python3.12")
-    monkeypatch.setenv("LPH_GUI_REEXEC", "4242")
-    started: list[dict] = []
-    monkeypatch.setattr(subprocess, "Popen",
-                        lambda argv, **kw: started.append({"argv": argv,
-                                                           **kw}))
+    manager = fake_velopack(FakeManager("9.9.9"))
+    monkeypatch.setenv("APPIMAGE", str(tmp_path / "App.AppImage"))
+    monkeypatch.setattr(subprocess, "Popen", _no_children)
 
-    assert updater.restart_app() is True
-
-    assert started[0]["argv"] == [str(appimage), "--gui"]
-    assert started[0]["start_new_session"] is True
-    env = started[0]["env"]
-    assert "PYTHONHOME" not in env and "APPDIR" not in env
-    assert "LPH_GUI_REEXEC" not in env
+    assert updater.update(restart=True)["staged"] is True
+    assert manager.handover["restart"] is True
 
 
-def test_restart_declines_outside_the_appimage(monkeypatch, tmp_path):
-    from linux_prefix_hub.core import updater
-    monkeypatch.delenv("APPIMAGE", raising=False)
-    assert updater.restart_app() is False
-
-    monkeypatch.setenv("APPIMAGE", str(tmp_path / "gone.AppImage"))
-    assert updater.restart_app() is False
+def _no_children(*_args, **_kwargs):
+    raise AssertionError("the update path must not start a process")

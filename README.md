@@ -249,13 +249,45 @@ linux-prefix-hub --check-update
 linux-prefix-hub --update
 ```
 
-Updates run through **Velopack**, which downloads, verifies and swaps the
-AppImage, then restarts into the new version. If **GearLever** manages the
-AppImage we detect that and stay out of its way — two updaters fighting over
-one file is worse than a slightly stale app.
+Updates run through **Velopack**, which downloads and verifies the new
+AppImage. If **GearLever** manages the AppImage we detect that and stay out of
+its way — two updaters fighting over one file is worse than a slightly stale
+app.
+
+**Installing one means closing the app**, and the window says so: putting the
+update in place is replacing the very file that is running, so it can only
+happen once that process has ended. Download it whenever you like, then choose
+**Close and update** when it suits you — the app closes, the new version goes
+in and starts up again. Choose **Later** and nothing is handed over: the
+download simply waits, and the next time you start the app it is already the
+new one.
 
 Only the AppImage can update itself. A `pip`/`pipx` install belongs to pip, and
 the local test build (`packaging/build-appimage.sh`) ships no updater at all.
+
+## Removing it again
+
+```bash
+linux-prefix-hub --uninstall                  # asks first, shows the plan
+linux-prefix-hub --uninstall --keep-settings  # keep what it learned
+```
+
+Or **Remove Linux Prefix Hub…** in the window's menu.
+
+This is not just a delete. Anything that was moved into your home folder is
+**moved back into its game first**, and every game that was connected is
+disconnected again — otherwise your games would be left pointing at a folder
+and a helper that are no longer there. If any of that cannot be done right now
+(a game is running, Steam is open), nothing is removed and you are told what is
+in the way.
+
+Nothing is ever deleted to resolve a conflict: if a file exists both in your
+home folder and in the game folder, both copies are kept and the message says
+where the other one is.
+
+Games you set up by hand are the one thing that cannot be finished for you —
+the launch command is yours, so those games are named at the end and you take
+`linux-prefix-hub-wrapper` back out of it yourself.
 
 ## In the background
 
@@ -292,6 +324,7 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --ignore-path PATH             never report that path as a storage location
   --unignore-path PATH           report it again
   --check-update / --update      Velopack
+  --uninstall [--keep-settings]  move all game data back, then remove the app
   --integrate                    recreate shims/service/menu entry
   --lang / --set-language        language for this run / permanently
   --wrapper CMD...               internal: called by Steam/Heroic
@@ -373,8 +406,12 @@ Marked in the code at the relevant spots:
    your own setup; anything missing is one `--add-game-folder` away.
 6. **Applying an update through the explicit locator** — `check()` is
    verified from a system interpreter (it finds 0.2.3 from 0.2.2), but the
-   `download` → swap → restart path with that locator has never run. It is
-   what replaces the AppImage file, so watch the first one.
+   `download` → hand over → restart path with that locator has never run. It
+   is what replaces the AppImage file, so watch the first one. Two things to
+   watch specifically: that the helper's `--restart` really brings an AppImage
+   back (if it does not, the next start is the new version anyway —
+   `updater.app_hook` applies what is waiting), and that **Later** leaves the
+   app closing normally, with the update installed on the next start.
 7. **The tray on a desktop that is not KDE** — GNOME needs the *AppIndicator*
    extension, and its host is a different implementation of the same two
    interfaces. Check that the icon appears, that a left click raises the
@@ -398,6 +435,12 @@ Marked in the code at the relevant spots:
     that file, so check the spelling against a game of yours that syncs
     (`~/.steam/steam/userdata/<id>/<appid>/remotecache.vdf`). A token we do
     not recognise costs a warning, never a wrong move.
+11. **A real uninstall** — verified end to end against a synthetic library
+    (`tests/test_uninstall.py`, plus a throwaway `HOME`). What only real
+    hardware can answer: that every launch option really is gone from Steam
+    afterwards, and that a game whose folder was moved back starts and finds
+    its saves. Run it with `--keep-settings` the first time and the DB is
+    still there if you want the app back.
 
 ## Documentation
 

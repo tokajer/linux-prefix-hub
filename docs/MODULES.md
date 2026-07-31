@@ -24,6 +24,7 @@ command).
 | `--open` | `core.desktop.open_folder` | user |
 | `--redirect`, `--undo-redirect` | `core.redirect` | user |
 | `--check-update`, `--update` | `core.updater` | user |
+| `--uninstall [--keep-settings]` | `core.uninstall` | user |
 | `--lang`, `--set-language` | `core.i18n` | user |
 
 **Building on it:** the three shim modes are matched *before* argparse and use
@@ -425,11 +426,12 @@ install-folder case fights with launcher updaters.
 
 ## `core/updater.py` — self-update via Velopack
 
-`app_hook()`, `check(force)` (cached for a day in config.json), `update()`,
-`restart_app()`, `available()`, `repo_url()`, `is_newer`, `parse_version`.
+`app_hook()`, `check(force)` (cached for a day in config.json),
+`download()`, `finish(restart)`, `update(restart)`, `available()`,
+`repo_url()`, `is_newer`, `parse_version`.
 
 Velopack owns the mechanics: `check_for_updates` → `download_updates` →
-`apply_updates_and_restart`, against the GitHub release feed that
+`wait_exit_then_apply_updates`, against the GitHub release feed that
 `packaging/build-velopack.sh` produces. We keep only two decisions of our own:
 
 1. **GearLever first.** If it manages our AppImage we do nothing — two
@@ -457,15 +459,92 @@ claimed to be current while the terminal offered the update.
 Everything degrades to an honest message when the `velopack` wheel is absent
 (pip installs, and the local `build-appimage.sh` test build).
 
-`restart_app()` exists because Velopack's `apply_updates_and_restart`
-does not always come back as a restart. When it returns, the window is
-still the old code showing the old version — so the GUI offers the
-restart instead of leaving the user to work it out. A new process, not
-`execv`: the AppImage mount belongs to this pid. The child gets
-`desktop.child_env()` (CLAUDE.md rule 4).
+### Installing one, in two halves
+
+**An update cannot be installed while we are running**, because installing it
+means replacing the file we are executing. Velopack starts its helper with
+`--waitPid <us>` and the helper does the work the moment we are gone. So:
+
+- `download()` fetches and nothing else. It returns `ready`, which is the
+  only key that means there is something to install — `ok` is also true for
+  "you are up to date" and for GearLever.
+- `finish(restart)` hands the package to the helper and **returns**. The
+  caller then has to end the process; until it does, the app is still the
+  old version. `restart=True` asks the helper to start us again afterwards,
+  which is the only way to come back: by the time the new build exists,
+  nobody is left here to launch it.
+- `update(restart=False)` is both, for `--update`.
+
+The SDK has a one-liner for all three, and it is the reason this is written
+out longhand: **`apply_updates_and_restart` calls `std::process::exit(0)`**
+on success (visible in the wheel's own machine code, right after the call to
+`wait_exit_then_apply_updates`). From the window that runs on a GTK worker
+thread, so the whole process dies mid-click — no message, no `done`
+callback, no clean shutdown, tray icon left on the session bus. And when it
+*fails* it returns instead, which the window then reported as "Update
+installed. Restart now", because `ok` meant three different things.
+
+There is no `restart_app()` any more. Starting the AppImage before this
+process exits starts the *old* build (nothing has been applied yet) and runs
+into our own single-instance lock, so the new process hands its activation
+to the instance that is about to quit and disappears — the exact symptom of
+"Restart now closes the app and nothing comes back".
+
+**VERIFY-ON-DEVICE:** that the helper's `--restart` really brings an AppImage
+back. If it does not, nothing is lost — `app_hook()` sets
+`set_auto_apply_on_startup(True)`, so the next start applies what is waiting.
 
 **Building on it:** `github_owner`/`github_repo`, or `update_url` for a
 completely different feed, in config.json — no rebuild needed.
+
+---
+
+## `core/uninstall.py` — taking the app back off the machine
+
+`plan()`, `blockers()`, `revert_all()`, `disconnect_all()`, `remove_files()`,
+`run(keep_settings)`. Used by `--uninstall` and by the window's
+"Remove {app}…" menu entry.
+
+Uninstalling is not "delete some files", because two of the things this app
+did live inside *other* people's configuration and outlive it:
+
+1. **Moved game data.** A redirected folder is in the home directory, and the
+   game only finds it through a symlink and a registry entry inside its own
+   folder. Delete the app and leave that standing and it still works — until
+   Proton recreates the folder, the link goes, and the game starts a fresh
+   save next to one nobody knows about.
+2. **Launch hooks.** Steam launch options, Lutris `prelaunch_command`, Heroic
+   `wrapperOptions` all name a shim in `~/.local/bin`. Remove the shim while
+   the option still points at it and the game does not start.
+
+Hence the order in `run()` — revert, disconnect, then delete — and the rule
+that gives the module its shape: **a step that fails stops the uninstall where
+it is.** Each stage leaves a machine that works (data in the game folder is
+the default arrangement; a hook whose shim exists is a hook that runs), so
+stopping is always safe and never half-done. `blockers()` is the same
+information asked *before* anything moves, so the user hears "close Steam"
+first rather than after forty folders have moved.
+
+Two details worth keeping:
+
+- **`redirect.undo` reads the DB, not just the symlink.** A Proton update
+  that recreated the folder took the link with it and left the data in the
+  home directory; undoing from the link alone finds nothing to bring back and
+  quietly resets the registry, stranding the saves. `_recorded_target()` is
+  what the prefix forgot. Files that exist on both sides are merged the usual
+  way — never overwritten, never deleted, and *named* in the result, because
+  two versions is a question only the player can answer.
+- **Cleanup is `rmdir` and nothing else.** `_prune_empty` removes the folders
+  we made once they are empty and stops the moment one is not. It also drops
+  the default redirect root itself — `~/Games/linux-prefix-hub`, which is
+  ours — but never `~/Games`, and never a root the user configured.
+
+`keep_settings` decides whether `~/.config/linux-prefix-hub` goes with it.
+The AppImage GearLever manages is never deleted: it placed that file.
+
+**Honest limit:** a hand-installed game has no config to edit. Its wrapper
+sits in a launch command the user wrote, so those games are *named* in the
+result instead of silently counted as done.
 
 ---
 
@@ -786,6 +865,20 @@ application and connect `close-request`. Without `hold()` GTK ends the app with
 its last window; without the `live` check the app would vanish with no way
 back. `_on_close` asks `live` again every time, because a desktop shell
 restart takes the tray host away mid-session.
+
+The update entry follows `updater`'s two halves: `_on_install_update` only
+calls `download()`, and only a `ready` answer reaches `_finish_update`, which
+asks whether the app may close — because closing it *is* the install step
+(`core/updater.py`). "Later" hands nothing over, so the next exit is an
+ordinary one and the download waits for `app_hook()` at the next start.
+
+`_on_uninstall` runs `uninstall.plan()` off the main loop first: a
+confirmation written before we know what there is to confirm would ask
+"remove everything?" and only then discover that a game is running. A blocked
+plan gets a dialog with **no** "remove anyway" button — that button would
+leave a game's data in a folder the game no longer points at. The confirm
+dialog carries a "keep what was learned" check button as its extra child, and
+the final dialog is the last thing the app ever shows before `quit()`.
 
 ---
 
