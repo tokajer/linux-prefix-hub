@@ -465,3 +465,7 @@ and to change it under those terms.
 The AppImage bundles a CPython interpreter (PSF licence) and, in the release
 build, Velopack (MIT); the window uses the system's PyGObject/GTK (LGPL). All
 of those may be combined with GPLv3 code.
+
+## If you like my work you can
+
+[![Buy me a coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=tokajer&button_colour=1e4c7a&font_colour=ffffff&font_family=Inter&outline_colour=ffffff&coffee_colour=FFDD00)](https://www.buymeacoffee.com/tokajer)
