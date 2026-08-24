@@ -30,6 +30,10 @@ VERIFY-ON-DEVICE:
   - localconfig.vdf writing: Steam overwrites the file when it exits, so we
     refuse to write while Steam is running. Test the round-trip once with a
     game you do not mind losing launch options on (we keep a .bak).
+  - config.vdf writing (`set_compat_tool`): the same round-trip, but on a
+    bigger and more central file -- it holds every account and every
+    compatibility choice on the machine. Do the first one with the .bak in
+    reach and check the file afterwards.
   - The Auto-Cloud root tokens in CLOUD_ROOTS: check the spelling against a
     real remotecache.vdf of a game that syncs (Valve documents the root names,
     not how they are written into that file). An unknown token costs us a
@@ -377,6 +381,116 @@ def disconnect(app_id: str) -> HookResult:
                           manual=True)
     _write_launch_options(app_id, None)
     return HookResult(True, _("Disconnected."))
+
+
+# --- Which compatibility build a game uses -------------------------------
+# Steam keeps this per machine rather than per account, in config.vdf, and it
+# is what `core/gameopts.py` needs to point a game at the private build it
+# made for it. Same rules as the launch options above: only while Steam is
+# closed, and a .bak either way -- this file is bigger and holds more than
+# one game's setting.
+def config_files() -> list[Path]:
+    """config.vdf of every Steam installation on this machine."""
+    found: list[Path] = []
+    for root in find_steam_roots():
+        cfg = root / "config" / "config.vdf"
+        if cfg.is_file():
+            found.append(cfg)
+    return found
+
+
+def _mapping_node(data: dict[str, Any]) -> dict[str, Any] | None:
+    return _descend(data, "InstallConfigStore", "Software", "Valve", "Steam",
+                    "CompatToolMapping")
+
+
+def compat_tool(app_id: str) -> str:
+    """Which compatibility build this game is set to, or "" for Steam's own."""
+    for cfg in config_files():
+        try:
+            data = vdf.loads(cfg.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        entry = (_mapping_node(data) or {}).get(str(app_id))
+        if isinstance(entry, dict) and entry.get("name"):
+            return str(entry["name"])
+    return ""
+
+
+def _write_compat_tool(app_id: str, name: str | None,
+                       expect: str | None = None) -> int:
+    """Set (or clear) one CompatToolMapping entry. Returns files written.
+
+    `expect` guards the clearing half: we only ever take out a mapping that
+    still names what we put there. If the user has since picked something
+    else themselves, that choice is theirs and removing it would be us
+    silently changing which build their game runs on.
+    """
+    written = 0
+    for cfg in config_files():
+        try:
+            data = vdf.loads(cfg.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        mapping = _mapping_node(data)
+        if mapping is None:
+            continue
+        entry = mapping.get(str(app_id))
+        if name is None:
+            if not isinstance(entry, dict):
+                continue
+            if expect is not None and str(entry.get("name", "")) != expect:
+                continue
+            del mapping[str(app_id)]
+        else:
+            # priority 250 is what Steam writes for a choice made by hand.
+            mapping[str(app_id)] = {"name": name, "config": "",
+                                    "priority": "250"}
+        try:
+            shutil.copy2(cfg, cfg.with_suffix(".vdf.bak"))
+            cfg.write_text(vdf.dumps(data), encoding="utf-8")
+            written += 1
+        except OSError:
+            continue
+    return written
+
+
+def set_compat_tool(app_id: str, name: str) -> HookResult:
+    """Point one game at a compatibility build by name."""
+    from ..core.i18n import _
+
+    if compat_tool(app_id) == name:
+        return HookResult(True, _("Already set."), tool_name=name)
+    if steam_is_running():
+        return HookResult(
+            False,
+            _("Steam is running. Close Steam and try again, or pick "
+              "'{name}' yourself under the game's compatibility "
+              "setting.", name=name),
+            manual=True, tool_name=name)
+    if _write_compat_tool(app_id, name):
+        return HookResult(True, _("Steam will use it from the next start."),
+                          tool_name=name)
+    return HookResult(
+        False,
+        _("Could not find Steam's settings file. Pick '{name}' yourself "
+          "under the game's compatibility setting.", name=name),
+        manual=True, tool_name=name)
+
+
+def clear_compat_tool(app_id: str, expect: str | None = None) -> HookResult:
+    """Give the game back to whatever Steam would choose on its own."""
+    from ..core.i18n import _
+
+    current = compat_tool(app_id)
+    if not current or (expect is not None and current != expect):
+        return HookResult(True, _("Nothing to change."))
+    if steam_is_running():
+        return HookResult(False,
+                          _("Steam is running. Close Steam and try again."),
+                          manual=True)
+    _write_compat_tool(app_id, None, expect=expect)
+    return HookResult(True, _("Steam chooses for this game again."))
 
 
 # --- Steam Cloud ---------------------------------------------------------

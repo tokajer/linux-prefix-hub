@@ -767,6 +767,20 @@ def _user_owned(loc: dict[str, Any]) -> bool:
     return any(loc.get(field) for field in LOCATION_USER_FIELDS)
 
 
+def forget_prefix(fp: str) -> bool:
+    """Drop everything we learned about one game folder. False if unknown.
+
+    Only ever for a folder that is *gone* (`newprefix.delete`): what we know
+    about a game that still exists is worth keeping even while it is hidden,
+    and re-learning it costs the user another playthrough.
+    """
+    with _connect() as conn, _write(conn):
+        conn.execute("DELETE FROM locations WHERE fingerprint = ?", (fp,))
+        changed = conn.execute("DELETE FROM prefixes WHERE fingerprint = ?",
+                               (fp,)).rowcount
+    return bool(changed)
+
+
 def set_managed(fp: str, managed: bool) -> bool:
     """Record whether the launch hook is installed for this prefix."""
     with _connect() as conn, _write(conn):

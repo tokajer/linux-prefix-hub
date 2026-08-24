@@ -33,9 +33,16 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from ..core import db, desktop, paths, redirect, registry  # noqa: E402
+from ..core import (  # noqa: E402
+    db,
+    desktop,
+    newprefix,
+    paths,
+    redirect,
+    registry,
+)
 from ..core.i18n import _  # noqa: E402
 from . import tasks  # noqa: E402
 
@@ -94,6 +101,17 @@ class GameRow(Adw.ExpanderRow):
         self._hide.connect("clicked", self._on_hide)
         self.add_suffix(self._hide)
 
+        # Only for a folder this app made: everything else in this list is
+        # somebody else's, and a launcher's game is theirs to remove.
+        self._own = newprefix.owned(game.get("prefix_path"))
+        if self._own is not None:
+            delete = Gtk.Button(icon_name="user-trash-symbolic",
+                                valign=Gtk.Align.CENTER)
+            delete.add_css_class("flat")
+            delete.set_tooltip_text(_("Delete this game folder"))
+            delete.connect("clicked", self._on_delete)
+            self.add_suffix(delete)
+
         self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._switch.set_tooltip_text(
             _("Let this game report where it stores its data"))
@@ -133,12 +151,29 @@ class GameRow(Adw.ExpanderRow):
             self.remove(row)
 
         folder = self._game.get("prefix_path")
-        if folder:
+        own = self._own
+        if own is not None:
+            # One we made ourselves: the game gets installed *next to* the
+            # Windows part, so that folder is the one worth showing, and
+            # putting something in it is what this row is here for.
+            self.add_row(GameFolderRow(self._window, str(own)))
+            self.add_row(PlayRow(self._window, own))
+            self.add_row(WindowsRow(self._window, own))
+            self.add_row(EngineRow(self._window, own))
+            self.add_row(PrivateBuildRow(self._window, own))
+        elif folder:
             self.add_row(GameFolderRow(self._window, str(folder)))
         else:
             # Never started: there is nothing to move yet, only something to
             # ask for. See `PendingRow`.
             self.add_row(PendingRow(self._window, self._game))
+
+        # How the game runs, before where it saves: it is a property of the
+        # game itself and does not wait on anything being learned. Steam
+        # games get it because a compatibility build can carry it; a folder
+        # we made gets it because we start that one ourselves.
+        if str(self._game.get("source")) == "steam" or own is not None:
+            self.add_row(OptionsRow(self._window, self._game))
 
         found = self._entry()
         locations = found[1].get("storage_locations", []) if found else []
@@ -237,6 +272,56 @@ class GameRow(Adw.ExpanderRow):
                 _("{game} is hidden. The eye in the header shows hidden "
                   "games.", game=self._name))
         GLib.idle_add(lambda: (self._window.refilter(), False)[1])
+
+    def _on_delete(self, *_args: Any) -> None:
+        """Ask first, and say what goes and what stays before asking.
+
+        A game folder holds the install and everything saved inside it. What
+        the user moved into their home folder is *not* in there and survives
+        -- which is exactly the part they would worry about, so it is said
+        here rather than found out afterwards.
+        """
+        folder = self._own
+        if folder is None:
+            return
+        body = _("This deletes {path} and everything in it: the game, its "
+                 "settings and anything saved inside it.", path=str(folder))
+        for path in newprefix.moved_out(str(self._game.get("prefix_path"))):
+            body += "\n\n" + _("Your moved game data stays in {path}.",
+                                path=path)
+
+        dialog = Adw.AlertDialog(
+            heading=esc(_("Delete {name}?", name=self._name)),
+            body=esc(body))
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("delete", _("Delete"))
+        dialog.set_response_appearance("delete",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(_d: Any, response: str) -> None:
+            if response == "delete":
+                self._delete()
+
+        dialog.connect("response", on_response)
+        dialog.present(self._window)
+
+    def _delete(self) -> None:
+        folder = str(self._own)
+
+        def work() -> Any:
+            return newprefix.delete(folder)
+
+        def done(result: Any, error: Exception | None) -> None:
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            self._window.toast(result.message)
+            self._window.reload()
+
+        tasks.run(work, done)
 
     def _on_lookup(self, *_args: Any) -> None:
         """Ask PCGamingWiki where this game saves. Network, so off the loop."""
@@ -381,6 +466,274 @@ class GameFolderRow(Adw.ActionRow):
             self.set_subtitle_selectable(True)
         self.add_suffix(path_button(window, path))
         self.set_activatable(False)
+
+
+class PlayRow(Adw.ActionRow):
+    """Start the game -- the only moment this app can watch one of these.
+
+    Everywhere else a launcher starts the game with our hook in its config.
+    A folder made here has no launcher, so a game started from the user's own
+    desktop file is invisible however long they play it. Started from this
+    button it gets the same two snapshots a Steam game gets
+    (`newprefix.launch`).
+    """
+
+    def __init__(self, window: MainWindow, directory: Path) -> None:
+        super().__init__()
+        self._window = window
+        self._dir = directory
+        self.set_title(esc(_("Start the game")))
+        self.set_activatable(False)
+
+        program = newprefix.program_of(directory)
+        self.set_subtitle(esc(
+            str(program.name) if program is not None
+            else _("Choose the program that starts it, once.")))
+
+        if program is not None:
+            change = Gtk.Button(icon_name="document-open-symbolic",
+                                valign=Gtk.Align.CENTER)
+            change.add_css_class("flat")
+            change.set_tooltip_text(_("Choose a different program"))
+            change.connect("clicked", self._on_choose)
+            self.add_suffix(change)
+
+            play = Gtk.Button(label=_("Start"), valign=Gtk.Align.CENTER)
+            play.add_css_class("suggested-action")
+            play.connect("clicked", self._on_play, None)
+            self.add_suffix(play)
+        else:
+            choose = Gtk.Button(label=_("Choose..."),
+                                valign=Gtk.Align.CENTER)
+            choose.connect("clicked", self._on_choose)
+            self.add_suffix(choose)
+
+    def _on_choose(self, *_a: Any) -> None:
+        if not hasattr(Gtk, "FileDialog"):             # GTK < 4.10
+            self._window.toast(_("Start it with: {cmd}",
+                                 cmd=f"{paths.APP_NAME} --play "
+                                     f"{self._dir} --program GAME.EXE"))
+            return
+        dialog = Gtk.FileDialog(title=_("Choose the program that starts the "
+                                        "game"))
+        dialog.set_initial_folder(Gio.File.new_for_path(str(self._dir)))
+
+        def on_done(source: Any, result: Any) -> None:
+            try:
+                chosen = source.open_finish(result)
+            except GLib.Error:
+                return                          # cancelled -- not an error
+            if chosen and chosen.get_path():
+                self._on_play(None, chosen.get_path())
+
+        dialog.open(self._window, None, on_done)
+
+    def _on_play(self, _button: Any, program: str | None) -> None:
+        directory = str(self._dir)
+        self._window.toast(_("Starting the game. What it stores is picked up "
+                             "when it ends."))
+
+        def work() -> Any:
+            return newprefix.launch(directory, program)
+
+        def done(result: Any, error: Exception | None) -> None:
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            self._window.toast(result.message)
+            self._window.reload()
+
+        tasks.run(work, done)
+
+
+class EngineRow(Adw.ActionRow):
+    """Which Windows version this folder is started with.
+
+    Changeable after the fact and with no game installed yet: the build is
+    not part of the folder, it is what gets pointed at it, and which one that
+    is is exactly the thing people try one after another.
+    """
+
+    def __init__(self, window: MainWindow, directory: Path) -> None:
+        super().__init__()
+        self._window = window
+        self._dir = directory
+        self.set_title(esc(_("Windows version")))
+        self.set_activatable(False)
+
+        self._ids = [str(e["id"]) for e in newprefix.engines()]
+        current = newprefix.engine_of(directory)
+        if current and current not in self._ids:
+            # The build it was made with is gone. Shown anyway, because it is
+            # what the folder says, and picking it up silently would hide
+            # that the next start uses something else (`find_engine`).
+            self._ids.insert(0, current)
+        labels = [newprefix.engine_label(name) for name in self._ids]
+
+        self._combo = Gtk.DropDown(model=Gtk.StringList.new(labels),
+                                   valign=Gtk.Align.CENTER)
+        self._combo.set_selected(self._ids.index(current)
+                                 if current in self._ids else 0)
+        self._combo.connect("notify::selected", self._on_pick)
+        self.add_suffix(self._combo)
+
+    def _on_pick(self, *_a: Any) -> None:
+        index = int(self._combo.get_selected())
+        if not 0 <= index < len(self._ids):
+            return
+        wanted = self._ids[index]
+        if wanted == newprefix.engine_of(self._dir):
+            return
+        result = newprefix.set_engine(self._dir, wanted)
+        self._window.toast(result.message)
+
+
+class PrivateBuildRow(Adw.ActionRow):
+    """A copy of the Windows version that belongs to this folder alone.
+
+    Made of hardlinks, so it costs no disk space. Two things it buys: the
+    version stops moving under the folder, and -- the reason it is offered
+    at all -- the extra options reach the game even when something else
+    starts it. A build reads its own settings file from inside the
+    container; a launcher of the game's own does not ask us, but it can be
+    pointed at this copy.
+    """
+
+    def __init__(self, window: MainWindow, directory: Path) -> None:
+        super().__init__()
+        self._window = window
+        self._dir = directory
+        self._syncing = False
+        self.set_title(esc(_("Own Windows version for this folder")))
+        self.set_activatable(False)
+
+        copy = newprefix.private_build(directory)
+        self.set_subtitle(esc(
+            str(copy) if copy is not None
+            else _("A copy of the version above, for this game only. Costs "
+                   "no disk space.")))
+        if hasattr(self, "set_subtitle_selectable"):
+            self.set_subtitle_selectable(True)
+
+        self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._sync_switch(copy is not None)
+        self._switch.connect("state-set", self._on_toggled)
+        self.add_suffix(self._switch)
+
+    def _sync_switch(self, active: bool) -> None:
+        self._syncing = True
+        self._switch.set_active(active)
+        self._switch.set_state(active)
+        self._syncing = False
+
+    def _on_toggled(self, _switch: Gtk.Switch, wanted: bool) -> bool:
+        if self._syncing:
+            return False
+        self._switch.set_sensitive(False)
+        directory = self._dir
+
+        def work() -> Any:
+            return (newprefix.make_private(directory) if wanted
+                    else newprefix.drop_private(directory))
+
+        def done(result: Any, error: Exception | None) -> None:
+            self._switch.set_sensitive(True)
+            if error is not None:
+                self._sync_switch(not wanted)
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            self._sync_switch(wanted if result.ok else not wanted)
+            self._window.toast(result.message)
+            self._window.reload()
+
+        tasks.run(work, done)
+        return True
+
+
+class WindowsRow(Adw.ActionRow):
+    """Put a program into a game folder we made ourselves.
+
+    Only appears on those (`newprefix.owned`): for any other game folder we
+    do not know which Windows version made it, and starting a program with
+    the wrong one is how a working setup stops working.
+    """
+
+    def __init__(self, window: MainWindow, directory: Path) -> None:
+        super().__init__()
+        self._window = window
+        self._dir = directory
+        self.set_title(esc(_("Install a program")))
+        self.set_subtitle(esc(_("An installer or a game you downloaded "
+                                "yourself.")))
+        self.set_activatable(False)
+
+        config = Gtk.Button(icon_name="emblem-system-symbolic",
+                            valign=Gtk.Align.CENTER)
+        config.add_css_class("flat")
+        config.set_tooltip_text(_("Windows settings for this folder"))
+        config.connect("clicked", self._on_settings)
+        self.add_suffix(config)
+
+        choose = Gtk.Button(label=_("Choose..."), valign=Gtk.Align.CENTER)
+        choose.connect("clicked", self._on_choose)
+        self.add_suffix(choose)
+
+    def _on_choose(self, *_a: Any) -> None:
+        if not hasattr(Gtk, "FileDialog"):            # GTK < 4.10
+            self._window.toast(_("Start it with: {cmd}",
+                                 cmd=f"{paths.APP_NAME} --run-in "
+                                     f"{self._dir} --program SETUP.EXE"))
+            return
+        dialog = Gtk.FileDialog(title=_("Choose the program to install"))
+        dialog.set_initial_folder(Gio.File.new_for_path(str(Path.home())))
+
+        def on_done(source: Any, result: Any) -> None:
+            try:
+                chosen = source.open_finish(result)
+            except GLib.Error:
+                return                        # cancelled -- not an error
+            if chosen and chosen.get_path():
+                self._run(chosen.get_path())
+
+        dialog.open(self._window, None, on_done)
+
+    def _run(self, program: str) -> None:
+        directory = str(self._dir)
+        self._window.toast(_("Starting {name}...",
+                             name=Path(program).name))
+
+        def work() -> Any:
+            return newprefix.install(directory, program)
+
+        def done(result: Any, error: Exception | None) -> None:
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            self._window.toast(result.message)
+            # An installer that put a game somewhere is a change to the
+            # folder, and the row above it says what is in there.
+            self._window.reload()
+
+        tasks.run(work, done)
+
+    def _on_settings(self, *_a: Any) -> None:
+        directory = str(self._dir)
+
+        def work() -> Any:
+            return newprefix.settings(directory)
+
+        def done(result: Any, error: Exception | None) -> None:
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            if not result.ok:
+                self._window.toast(result.message)
+
+        tasks.run(work, done)
 
 
 class PendingRow(Adw.ActionRow):
@@ -570,6 +923,23 @@ class LocationRow(Adw.ActionRow):
         tasks.run(work, done)
 
 
+def choose_folder(window: MainWindow, title: str, start: Any,
+                  on_folder: Any) -> None:
+    """Ask for a folder. Only ever called where `Gtk.FileDialog` exists."""
+    dialog = Gtk.FileDialog(title=title)
+    dialog.set_initial_folder(Gio.File.new_for_path(str(start)))
+
+    def on_done(source: Any, result: Any) -> None:
+        try:
+            folder = source.select_folder_finish(result)
+        except GLib.Error:
+            return                                # cancelled -- not an error
+        if folder and folder.get_path():
+            on_folder(folder.get_path())
+
+    dialog.select_folder(window, None, on_done)
+
+
 class SettingsDialog:
     """Everything about the app itself: where moved game data is kept, the
     two switches, and removing it again. Presented on the window.
@@ -607,11 +977,112 @@ class SettingsDialog:
         self._row.add_suffix(reset)
 
         group.add(self._row)
+        self._offer_old_data(group)
         page.add(group)
+        page.add(self._new_folder_group())
         page.add(self._online_group())
         page.add(self._tray_group())
         page.add(self._remove_group())
         self._dialog.add(page)
+
+    def _offer_old_data(self, group: Adw.PreferencesGroup) -> None:
+        """Data an earlier version left in the folder we used to use.
+
+        Shown where the folder it would move into is named, and only while
+        there is something to move -- a permanent row for a one-off tidy-up
+        is one more thing to explain. Nothing happens without the button:
+        moving somebody's saves is not a side effect of opening Settings.
+        """
+        from ..core import redirect
+        waiting = redirect.stale_targets()
+        if not waiting:
+            return
+        self._old_row = Adw.ActionRow(
+            title=esc(_("{n} game(s) still in the old folder",
+                        n=len(waiting))),
+            subtitle=esc(", ".join(sorted({str(item["game_name"])
+                                           for item in waiting}))))
+        button = Gtk.Button(label=_("Move them"), valign=Gtk.Align.CENTER)
+        button.connect("clicked", self._on_move_old)
+        self._old_row.add_suffix(button)
+        self._old_row.set_activatable(False)
+        group.add(self._old_row)
+
+    def _on_move_old(self, button: Gtk.Button) -> None:
+        button.set_sensitive(False)
+
+        def work() -> Any:
+            from ..core import redirect
+            return redirect.move_stale()
+
+        def done(results: Any, error: Exception | None) -> None:
+            if error is not None:
+                button.set_sensitive(True)
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            failed = [r for r in results or [] if not r.ok]
+            if failed:
+                button.set_sensitive(True)
+                self._window.toast(failed[0].message)
+                return
+            self._old_row.set_visible(False)
+            self._window.toast(_("Moved into {path}.",
+                                 path=str(db.redirect_root())))
+            self._window.reload()
+
+        tasks.run(work, done)
+
+    def _new_folder_group(self) -> Adw.PreferencesGroup:
+        """Where a game folder of your own is made, unless you say otherwise.
+
+        A second folder setting next to the first one, and not the same one:
+        moved game data is small and belongs near the user, a game folder
+        holds the whole install and is the thing that has to go on the disk
+        with room on it.
+        """
+        group = Adw.PreferencesGroup(
+            title=_("Where new game folders are made"),
+            description=_("A game folder you set up yourself is made here, "
+                          "and the game is installed into it -- so this "
+                          "wants to be a disk with room on it. Folders you "
+                          "already made stay where they are."))
+        self._root_row = Adw.ActionRow(title=esc(_("Games folder")))
+        self._root_row.set_subtitle(esc(str(newprefix.root())))
+        if hasattr(self._root_row, "set_subtitle_selectable"):
+            self._root_row.set_subtitle_selectable(True)
+
+        choose = Gtk.Button(label=_("Choose..."), valign=Gtk.Align.CENTER)
+        choose.connect("clicked", self._on_choose_root)
+        self._root_row.add_suffix(choose)
+
+        reset = Gtk.Button(icon_name="edit-undo-symbolic",
+                           valign=Gtk.Align.CENTER)
+        reset.add_css_class("flat")
+        reset.set_tooltip_text(_("Back to the default folder"))
+        reset.connect("clicked", self._on_reset_root)
+        self._root_row.add_suffix(reset)
+        group.add(self._root_row)
+        return group
+
+    def _apply_root(self, path: str | None) -> None:
+        where = newprefix.set_root(path)
+        self._root_row.set_subtitle(esc(str(where)))
+        self._window.toast(_("New game folders are made in {path}.",
+                             path=str(where)))
+
+    def _on_reset_root(self, *_a: Any) -> None:
+        self._apply_root(None)
+
+    def _on_choose_root(self, *_a: Any) -> None:
+        if not hasattr(Gtk, "FileDialog"):        # GTK < 4.10
+            self._window.toast(_("Set it with: {cmd}",
+                                 cmd=f"{paths.APP_NAME} --set-game-root "
+                                     f"PATH"))
+            return
+        choose_folder(self._window, _("Choose where new game folders are "
+                                      "made"), newprefix.root(),
+                      self._apply_root)
 
     def _tray_group(self) -> Adw.PreferencesGroup:
         """Whether closing the window ends the app or only hides it."""
@@ -719,19 +1190,409 @@ class SettingsDialog:
                                  cmd=f"{paths.APP_NAME} --set-data-folder "
                                      f"PATH"))
             return
-        dialog = Gtk.FileDialog(title=_("Choose the data folder"))
-        dialog.set_initial_folder(Gio.File.new_for_path(
-            str(db.redirect_root().parent)))
+        choose_folder(self._window, _("Choose the data folder"),
+                      db.redirect_root().parent, self._apply)
 
-        def on_done(source: Any, result: Any) -> None:
+
+class OptionsRow(Adw.ActionRow):
+    """How this game runs, as opposed to where it keeps things.
+
+    Two kinds of game get this row, for opposite reasons. A Steam game gets
+    a compatibility build of its own to carry the settings, because Steam
+    starts it inside a container that filters the environment. A folder this
+    app made needs none of that: we start that game ourselves, so the
+    profile is simply the environment we start it with. Lutris and Heroic
+    will set the same variables their own way and read the same profile.
+    """
+
+    def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
+        super().__init__()
+        self._window = window
+        self._game = game
+        self._syncing = False
+
+        self.set_title(esc(_("Extra options")))
+
+        settings = Gtk.Button(icon_name="emblem-system-symbolic",
+                              valign=Gtk.Align.CENTER)
+        settings.add_css_class("flat")
+        settings.set_tooltip_text(_("Choose what to turn on"))
+        settings.connect("clicked", self._on_settings)
+        self.add_suffix(settings)
+
+        self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._switch.set_tooltip_text(_("Use these options for this game"))
+        self._switch.connect("state-set", self._on_toggled)
+        self.add_suffix(self._switch)
+        self.set_activatable(False)
+        self.refresh()
+
+    # --- presentation ----------------------------------------------------
+    def refresh(self) -> None:
+        """Read the profile back and draw what it now says."""
+        from ..core import gameopts
+        profile = gameopts.read(str(self._game.get("source")),
+                                str(self._game.get("app_id")))
+        self._sync_switch(bool(profile.get("enabled")))
+        self.set_subtitle(esc(self._summary(profile)))
+
+    def _summary(self, profile: dict[str, Any]) -> str:
+        from ..core import gameopts
+        if not profile.get("enabled"):
+            return _("off")
+        chosen = [gameopts.switch_label(name)
+                  for name in profile.get("switches", [])]
+        own = gameopts.parse_custom(str(profile.get("custom") or ""))
+        if own:
+            chosen.append(_("{n} of your own", n=len(own)))
+        summary = ", ".join(chosen) if chosen else _("on, nothing chosen yet")
+        # Said, never acted on: a newer build is an offer, and the one that
+        # is running now goes on working either way.
+        if gameopts.outdated(profile):
+            summary += " -- " + _("a newer version is available")
+        return summary
+
+    def _sync_switch(self, active: bool) -> None:
+        self._syncing = True
+        self._switch.set_active(active)
+        self._switch.set_state(active)
+        self._syncing = False
+
+    # --- actions ---------------------------------------------------------
+    def _on_settings(self, *_a: Any) -> None:
+        OptionsDialog(self._window, self._game, self).present()
+
+    def _on_toggled(self, _switch: Gtk.Switch, wanted: bool) -> bool:
+        if self._syncing:
+            return False
+        self._switch.set_sensitive(False)
+        self.apply(wanted)
+        return True
+
+    def apply(self, wanted: bool) -> None:
+        """Build it and point Steam at it, or take both back away.
+
+        Copying a compatibility build and editing Steam's settings are both
+        disk, so both go off the main loop like everything else here.
+        """
+        game = dict(self._game)
+        name = str(self._game.get("game_name", ""))
+
+        def work() -> Any:
+            from ..core import gameopts
+            return (gameopts.turn_on(game) if wanted
+                    else gameopts.turn_off(game))
+
+        def done(result: Any, error: Exception | None) -> None:
+            self._switch.set_sensitive(True)
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+            elif result.get("manual"):
+                # Steam is open, so the last step is the user's. The window
+                # already knows how to show one of those.
+                self._window.show_manual_step(name, result)
+            else:
+                self._window.toast(result.message)
+            self.refresh()
+
+        tasks.run(work, done)
+
+
+class OptionsDialog:
+    """What the extra options for one game are.
+
+    Built like `SettingsDialog`: every choice is stored the moment it is
+    made, and there is no OK button for that. What the page does *not* do by
+    itself is put the choices to work -- that is the Apply row at the end,
+    because it copies a build and edits Steam's own settings, and neither
+    should happen while somebody is still making up their mind.
+    """
+
+    def __init__(self, window: MainWindow, game: dict[str, Any],
+                 row: OptionsRow) -> None:
+        from ..core import gameopts
+        self._window = window
+        self._game = game
+        self._row = row
+        self._source = str(game.get("source"))
+        self._app_id = str(game.get("app_id"))
+        self._profile = gameopts.read(self._source, self._app_id)
+
+        self._dialog = (Adw.PreferencesDialog()
+                        if hasattr(Adw, "PreferencesDialog")
+                        else Adw.PreferencesWindow())
+        page = Adw.PreferencesPage(title=_("Extra options"))
+        # Built in this order because `_store` reads the text box, and the
+        # switches above it can be flicked as soon as the page is up.
+        self._custom = self._custom_group()
+        if self._source == "custom":
+            page.add(self._name_group())
+        page.add(self._switch_group())
+        page.add(self._custom)
+        # Which build to copy is a question only the copy has. A folder this
+        # app made has its own Windows version in its own row, and copying
+        # anything for it would be a second answer to the same question.
+        self._own = gameopts.own_folder(game)
+        if not self._own:
+            page.add(self._version_group())
+        page.add(self._apply_group())
+        self._dialog.add(page)
+
+    # --- the page --------------------------------------------------------
+    def _switch_group(self) -> Adw.PreferencesGroup:
+        from ..core import gameopts
+        group = Adw.PreferencesGroup(
+            title=esc(str(self._game.get("game_name", ""))),
+            description=_("These apply to this one thing and nothing else."))
+        chosen = set(self._profile.get("switches", []))
+        for name in gameopts.SWITCHES:
+            row = Adw.ActionRow(title=esc(gameopts.switch_label(name)),
+                                subtitle=esc(gameopts.switch_hint(name)))
+            switch = Gtk.Switch(valign=Gtk.Align.CENTER,
+                                active=name in chosen)
+            switch.connect("state-set", self._on_switch, name)
+            row.add_suffix(switch)
+            row.set_activatable(False)
+            group.add(row)
+        return group
+
+    def _name_group(self) -> Adw.PreferencesGroup:
+        """What we call it here, as opposed to what it is called on disk.
+
+        Only the title is editable. The short name underneath it is in
+        somebody else's configuration by now -- whatever launcher this
+        environment was made for points straight at that folder -- so it is
+        shown and not offered for editing.
+        """
+        from ..core import gameopts
+        group = Adw.PreferencesGroup(
+            title=_("Name"),
+            description=_("The short name is what it is called on disk and "
+                          "in Steam's list, and it stays. This is only what "
+                          "it is called here."))
+        directory = gameopts.find_instance(self._source, self._app_id)
+        self._name = Adw.EntryRow(title=esc(_("Name")))
+        self._name.set_text(str(self._profile.get("title") or self._app_id))
+        self._name.connect("apply", self._on_rename)
+        self._name.set_show_apply_button(True)
+        group.add(self._name)
+
+        short = Adw.ActionRow(
+            title=esc(_("Short name")),
+            subtitle=esc(directory.name if directory is not None
+                         else f"{gameopts.PREFIX}-{self._app_id}"))
+        if hasattr(short, "set_subtitle_selectable"):
+            short.set_subtitle_selectable(True)
+        short.set_activatable(False)
+        group.add(short)
+        return group
+
+    def _on_rename(self, entry: Adw.EntryRow) -> None:
+        from ..core import gameopts
+        result = gameopts.rename(self._source, self._app_id,
+                                 entry.get_text())
+        if result.ok:
+            self._profile["title"] = str(result["title"])
+        self._window.toast(result.message)
+        self._row.refresh()
+        self._window.reload()
+
+    def _custom_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(
+            title=_("Your own settings"),
+            description=_("One NAME=value per line. Lines starting with # "
+                          "are ignored. These win over the switches above."))
+        frame = Gtk.Frame()
+        self._text = Gtk.TextView(top_margin=6, bottom_margin=6,
+                                  left_margin=6, right_margin=6)
+        self._text.set_monospace(True)
+        self._text.set_size_request(-1, 120)
+        self._text.get_buffer().set_text(
+            str(self._profile.get("custom") or ""))
+        frame.set_child(self._text)
+        group.add(frame)
+        return group
+
+    def _version_group(self) -> Adw.PreferencesGroup:
+        """Follow the newest, or hold one still.
+
+        `Adw.ComboRow` rather than a bare `Gtk.DropDown`: it is in
+        libadwaita 1.0, and this app runs on whatever GTK the host has.
+        """
+        from ..core import gameopts
+        group = Adw.PreferencesGroup(
+            title=_("Which version to use"),
+            description=_("Following the newest keeps up with updates by "
+                          "itself. A fixed one never changes under you."))
+        self._bases = [gameopts.DEFAULT_FAMILY] + gameopts.list_bases()
+        labels = [_("Newest available")] + self._bases[1:]
+        current = str(self._profile.get("base") or gameopts.DEFAULT_FAMILY)
+
+        self._combo = Adw.ComboRow(title=esc(_("Version")),
+                                   model=Gtk.StringList.new(labels))
+        self._combo.set_selected(self._bases.index(current)
+                                 if current in self._bases else 0)
+        self._combo.connect("notify::selected", self._on_base)
+        group.add(self._combo)
+        return group
+
+    def _apply_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(
+            description=_("They apply the next time you start the game from "
+                          "here.") if self._own
+            else _("Steam has to be closed for this, and picks the "
+                   "change up the next time it starts."))
+        row = Adw.ActionRow(
+            title=esc(_("Use these options for this game")))
+        button = Gtk.Button(label=_("Apply"), valign=Gtk.Align.CENTER)
+        button.add_css_class("suggested-action")
+        button.connect("clicked", self._on_apply)
+        row.add_suffix(button)
+        row.set_activatable(False)
+        group.add(row)
+        return group
+
+    # --- actions ---------------------------------------------------------
+    def _store(self) -> None:
+        """Keep what the page currently says. One small JSON key, no walk.
+
+        The text box is read here rather than on every keystroke: storing a
+        character at a time would rewrite the config file per key pressed.
+        """
+        from ..core import gameopts
+        buffer = self._text.get_buffer()
+        start, end = buffer.get_bounds()
+        self._profile["custom"] = buffer.get_text(start, end, False)
+        gameopts.write(self._source, self._app_id, self._profile)
+        self._row.refresh()
+
+    def _on_switch(self, _switch: Gtk.Switch, wanted: bool,
+                   name: str) -> bool:
+        chosen = [s for s in self._profile.get("switches", []) if s != name]
+        if wanted:
+            chosen.append(name)
+        self._profile["switches"] = chosen
+        self._store()
+        return False              # let the switch draw the new state itself
+
+    def _on_base(self, *_a: Any) -> None:
+        index = int(self._combo.get_selected())
+        if 0 <= index < len(self._bases):
+            self._profile["base"] = self._bases[index]
+            self._store()
+
+    def _on_apply(self, *_a: Any) -> None:
+        self._store()
+        self._dialog.close()
+        self._row.apply(True)
+
+    def present(self) -> None:
+        if hasattr(self._dialog, "present"):
             try:
-                folder = source.select_folder_finish(result)
-            except GLib.Error:
-                return                            # cancelled -- not an error
-            if folder and folder.get_path():
-                self._apply(folder.get_path())
+                self._dialog.present(self._window)
+                return
+            except TypeError:            # PreferencesWindow.present() takes 0
+                pass
+        self._dialog.set_transient_for(self._window)
+        self._dialog.set_modal(True)
+        self._dialog.show()
 
-        dialog.select_folder(self._window, None, on_done)
+
+class CustomRow(Adw.ExpanderRow):
+    """One environment the user made, belonging to no game.
+
+    Same expander as a game, minus everything that needs one: no connect
+    switch, no storage locations, no folder -- there is no game to have any
+    of those. What is left is the part that was never about a game in the
+    first place, which is why this exists.
+    """
+
+    def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
+        super().__init__()
+        self._window = window
+        self._game = game
+        self._name = str(game.get("game_name", "?"))
+
+        self.set_title(esc(self._name))
+        from ..core import gameopts
+        directory = gameopts.find_instance(str(game.get("source")),
+                                           str(game.get("app_id")))
+        self.set_subtitle(esc(
+            _("{name} -- pick it in the game you want it for",
+              name=directory.name) if directory is not None
+            else _("yours -- pick it in the game you want it for")))
+
+        forget = Gtk.Button(icon_name="user-trash-symbolic",
+                            valign=Gtk.Align.CENTER)
+        forget.add_css_class("flat")
+        forget.set_tooltip_text(_("Remove this environment"))
+        forget.connect("clicked", self._on_forget)
+        self.add_suffix(forget)
+
+        self._options = OptionsRow(window, game)
+        self.add_row(self._options)
+
+    def _on_forget(self, *_args: Any) -> None:
+        """Ask first: this deletes something the user made and named."""
+        dialog = Adw.AlertDialog(
+            heading=esc(_("Remove {name}?", name=self._name)),
+            body=esc(_("Anything you pointed at it goes back to what Steam "
+                       "would choose on its own.")))
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("remove", _("Remove"))
+        dialog.set_response_appearance("remove",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(_d: Any, response: str) -> None:
+            if response == "remove":
+                self._forget()
+
+        dialog.connect("response", on_response)
+        dialog.present(self._window)
+
+    def _forget(self) -> None:
+        game = dict(self._game)
+
+        def work() -> Any:
+            from ..core import gameopts
+            result = gameopts.turn_off(game)
+            if result.ok:
+                gameopts.forget(str(game["source"]), str(game["app_id"]))
+            return result
+
+        def done(result: Any, error: Exception | None) -> None:
+            if error is not None:
+                self._window.toast(_("Something went wrong: {error}",
+                                     error=str(error)))
+                return
+            self._window.toast(result.message if not result.ok
+                               else _("{name} is gone.", name=self._name))
+            self._window.reload()
+
+        tasks.run(work, done)
+
+
+def ask_for_a_name(window: MainWindow, heading: str, body: str,
+                   on_name: Any) -> None:
+    """One line of text, in a dialog. Used for a new environment."""
+    dialog = Adw.AlertDialog(heading=esc(heading), body=esc(body))
+    entry = Gtk.Entry(margin_top=6, activates_default=True)
+    dialog.set_extra_child(entry)
+    dialog.add_response("cancel", _("Cancel"))
+    dialog.add_response("make", _("Create"))
+    dialog.set_response_appearance("make", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("make")
+    dialog.set_close_response("cancel")
+
+    def on_response(_d: Any, response: str) -> None:
+        if response == "make":
+            on_name(entry.get_text().strip())
+
+    dialog.connect("response", on_response)
+    dialog.present(window)
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -746,6 +1607,7 @@ class MainWindow(Adw.ApplicationWindow):
         # of walking every library again.
         self._scanned: list[tuple[str, list[dict[str, Any]]]] = []
         self._show_hidden = False
+        self._own: list[dict[str, Any]] = []
 
         self._spinner = Adw.StatusPage(title=_("Looking for your games..."))
         self._spinner.set_child(Adw.Spinner() if hasattr(Adw, "Spinner")
@@ -777,6 +1639,11 @@ class MainWindow(Adw.ApplicationWindow):
         # hidden. A permanent button for a list nobody has ever filtered is
         # one more thing to explain; a way back that only exists while it is
         # needed is not.
+        new_folder = Gtk.Button(icon_name="folder-new-symbolic")
+        new_folder.set_tooltip_text(_("Set up a new game folder"))
+        new_folder.connect("clicked", self._on_new_folder)
+        header.pack_start(new_folder)
+
         self._hidden_toggle = Gtk.ToggleButton(
             icon_name="view-conceal-symbolic")
         self._hidden_toggle.set_tooltip_text(_("Show hidden games"))
@@ -921,6 +1788,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._column.remove(group)
         self._groups = []
 
+        # Above the launchers: these belong to no launcher, and a heading
+        # after four hundred games is a heading nobody finds.
+        own = self._custom_group()
+        self._column.append(own)
+        self._groups.append(own)
+
         hidden_keys = set(db.hidden_games())
         shown = 0
         for source, games in self._scanned:
@@ -946,7 +1819,208 @@ class MainWindow(Adw.ApplicationWindow):
                                         or self._show_hidden)
         found = sum(len(games) for _s, games in self._scanned)
         self._empty_because_hidden(bool(found) and not shown)
-        self._stack.set_visible_child_name("list" if shown else "empty")
+        # An environment of the user's own is a reason to show the list even
+        # when no game is: they made it, it is theirs, and the empty page
+        # would be a lie in front of it.
+        self._stack.set_visible_child_name(
+            "list" if (shown or self._own) else "empty")
+
+    def _custom_group(self) -> Adw.PreferencesGroup:
+        """Environments the user made, plus the way to make one."""
+        from ..core import gameopts
+        self._own = gameopts.custom_environments()
+        group = Adw.PreferencesGroup(
+            title=esc(_("Your own environments")),
+            description=_("Settings that belong to no game. Make one, then "
+                          "pick it in whatever you want to use it for."))
+        add = Gtk.Button(icon_name="list-add-symbolic",
+                         valign=Gtk.Align.CENTER)
+        add.add_css_class("flat")
+        add.set_tooltip_text(_("Make a new one"))
+        add.connect("clicked", self._on_new_custom)
+        group.set_header_suffix(add)
+
+        for game in self._own:
+            group.add(CustomRow(self, game))
+        if not self._own:
+            hint = Adw.ActionRow(
+                title=esc(_("Nothing here yet")),
+                subtitle=esc(_("Use the plus button to make one.")))
+            hint.set_activatable(False)
+            group.add(hint)
+        self._offer_import(group)
+        return group
+
+    def _offer_import(self, group: Adw.PreferencesGroup) -> None:
+        """The shell script's profiles, if any are still only its.
+
+        Shown where they would land rather than in a menu somewhere: the
+        offer only makes sense next to the list it would add to, and it
+        disappears by itself once there is nothing left to take over.
+        """
+        from ..core import gameopts
+        waiting = gameopts.importable()
+        if not waiting:
+            return
+        row = Adw.ActionRow(
+            title=esc(_("{n} setup(s) found from proton-instance",
+                        n=len(waiting))),
+            subtitle=esc(", ".join(str(e["name"]) for e in waiting)))
+        button = Gtk.Button(label=_("Take over"), valign=Gtk.Align.CENTER)
+        button.connect("clicked", self._on_import, waiting)
+        row.add_suffix(button)
+        row.set_activatable(False)
+        group.add(row)
+
+    def _on_import(self, _button: Gtk.Button,
+                   waiting: list[dict[str, str]]) -> None:
+        def work() -> Any:
+            from ..core import gameopts
+            return [gameopts.import_legacy(entry) for entry in waiting]
+
+        def done(results: Any, error: Exception | None) -> None:
+            if error is not None:
+                self.toast(_("Something went wrong: {error}",
+                             error=str(error)))
+                return
+            self.toast(_("{n} taken over. Their own folders were left "
+                         "alone.", n=sum(1 for r in results if r.ok)))
+            self.reload()
+
+        tasks.run(work, done)
+
+    def _on_new_folder(self, *_args: Any) -> None:
+        """A game folder of the user's own: a name and a Windows version.
+
+        The version is asked here and never again: it is written into the
+        folder, and everything started in it afterwards uses the same one.
+        """
+        engines = newprefix.engines()
+        if not engines:
+            self.toast(_("Nothing on this system can run Windows games yet. "
+                         "Install a compatibility build in Steam, or Wine."))
+            return
+
+        dialog = Adw.AlertDialog(
+            heading=esc(_("A game folder of your own")),
+            body=esc(_("For a game no launcher knows about. Give it a name, "
+                       "then install the game into it.")))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                      margin_top=6)
+        entry = Gtk.Entry(activates_default=True)
+        entry.set_placeholder_text(_("Name"))
+        box.append(entry)
+
+        # The short name its folder gets. Left empty it follows the name,
+        # which is what most people want; typed once it never moves again,
+        # because a path is what everything else ends up pointing at.
+        alias = Gtk.Entry(activates_default=True)
+        alias.set_placeholder_text(_("Short name for the folder (optional)"))
+        box.append(alias)
+
+        labels = [newprefix.engine_label(e["id"]) for e in engines]
+        combo = Gtk.DropDown(model=Gtk.StringList.new(labels))
+        chosen = newprefix.default_engine()
+        ids = [e["id"] for e in engines]
+        combo.set_selected(ids.index(chosen) if chosen in ids else 0)
+        box.append(combo)
+
+        # Where it goes, for this one folder. The remembered default is in
+        # Settings; this is the game that does not fit on that disk.
+        where = {"path": str(newprefix.root())}
+        place = Gtk.Button(label=where["path"])
+        place.set_tooltip_text(_("Choose where this folder is made"))
+        # A path is one long word: without this the dialog grows to fit it.
+        inner = place.get_child()
+        if isinstance(inner, Gtk.Label):
+            inner.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            inner.set_max_width_chars(34)
+        place.connect("clicked", self._pick_place, where, place)
+        box.append(place)
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("make", _("Create"))
+        dialog.set_response_appearance("make",
+                                       Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("make")
+        dialog.set_close_response("cancel")
+
+        def on_response(_d: Any, response: str) -> None:
+            if response != "make":
+                return
+            index = int(combo.get_selected())
+            self._make_folder(entry.get_text().strip(),
+                              ids[index] if 0 <= index < len(ids) else "",
+                              where["path"], alias.get_text().strip())
+
+        dialog.connect("response", on_response)
+        dialog.present(self)
+
+    def _pick_place(self, _button: Gtk.Button, where: dict[str, str],
+                    label: Gtk.Button) -> None:
+        if not hasattr(Gtk, "FileDialog"):            # GTK < 4.10
+            self.toast(_("Set it with: {cmd}",
+                         cmd=f"{paths.APP_NAME} --set-game-root PATH"))
+            return
+
+        def chosen(path: str) -> None:
+            where["path"] = path
+            label.set_label(path)
+
+        choose_folder(self, _("Choose where new game folders are made"),
+                      where["path"], chosen)
+
+    def _make_folder(self, name: str, engine: str, target: str,
+                     alias: str = "") -> None:
+        if not name:
+            self.toast(_("That name cannot be used."))
+            return
+        # Setting one up runs a whole Windows boot and takes a while, so say
+        # that it started -- the window has nothing else to show until it is
+        # done.
+        self.toast(_("Setting {name} up...", name=name))
+
+        def work() -> Any:
+            return newprefix.create(name, engine, target, alias)
+
+        def done(result: Any, error: Exception | None) -> None:
+            if error is not None:
+                self.toast(_("Something went wrong: {error}",
+                             error=str(error)))
+                return
+            self.toast(result.message)
+            if result.ok:
+                self.reload()
+
+        tasks.run(work, done)
+
+    def _on_new_custom(self, *_args: Any) -> None:
+        ask_for_a_name(
+            self, _("A setting of your own"),
+            _("Give it a name. It shows up in the compatibility list and you "
+              "pick it wherever you want to use it."),
+            self._make_custom)
+
+    def _make_custom(self, name: str) -> None:
+        from ..core import gameopts
+        if not gameopts.slug(name):
+            self.toast(_("That name cannot be used."))
+            return
+
+        def work() -> Any:
+            return gameopts.turn_on(gameopts.as_game(name))
+
+        def done(result: Any, error: Exception | None) -> None:
+            if error is not None:
+                self.toast(_("Something went wrong: {error}",
+                             error=str(error)))
+                return
+            self.toast(result.message)
+            if result.ok:
+                self.reload()
+
+        tasks.run(work, done)
 
     # --- feedback --------------------------------------------------------
     def toast(self, message: str) -> None:
@@ -955,14 +2029,15 @@ class MainWindow(Adw.ApplicationWindow):
     def show_manual_step(self, game: str, result: Any) -> None:
         """One step only the user can take, with the text to copy.
 
-        Two cases: Steam's launch options (they cannot be written while Steam
-        runs) and a hand-installed game (there is no launcher config at all).
-        Each adapter names its detail after what the string *is*, so look for
-        both rather than inventing a shared name for two different things.
+        Three cases: Steam's launch options and the compatibility build a
+        game's extra options need (neither can be written while Steam runs),
+        and a hand-installed game (there is no launcher config at all). Each
+        one names its detail after what the string *is*, so look for all of
+        them rather than inventing a shared name for three different things.
         """
         detail = result["detail"]
         options = next((str(detail[key]) for key in ("launch_options",
-                                                     "command")
+                                                     "command", "tool_name")
                         if detail.get(key)), "")
         dialog = Adw.AlertDialog(heading=esc(game),
                                  body=esc(result.message))
@@ -1277,6 +2352,9 @@ class LphApplication(Adw.Application):
         if preview["connected"]:
             lines.append(_("{n} game(s) are disconnected again.",
                            n=len(preview["connected"])))
+        if preview["options"]:
+            lines.append(_("{n} game(s) go back to Steam's own settings.",
+                           n=len(preview["options"])))
         lines.append(_("{n} file(s) that {app} installed are deleted.",
                        n=len(preview["files"]), app=paths.APP_TITLE))
         if preview["gearlever"]:

@@ -27,6 +27,7 @@ import contextlib
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from ..adapters import base
@@ -164,31 +165,49 @@ def _after(ctx: dict[str, Any], before: Snapshots) -> None:
         db.upsert_prefix(_entry_from_context(ctx, known + locations))
 
 
-def main(argv: list[str]) -> int:
-    """argv = the real game command (whatever stands behind %command%)."""
-    if not argv:
-        print("wrapper: no game command given", file=sys.stderr)
-        return 2
+def observed(ctx: dict[str, Any] | None,
+             start: Callable[[], int]) -> int:
+    """Snapshot, run `start`, diff. The whole of what this app learns.
 
-    ctx = None
-    before: dict[str, float] = {}
+    Split out of `main` because the launch itself is not always a command we
+    were handed: `core/newprefix.py` starts a game in a folder it made
+    itself, knows the context without asking the environment, and has to
+    learn the same thing from the same two snapshots. Everything around
+    `start()` is in try/except and the exit code is passed through -- rule 3
+    holds wherever this is called from.
+    """
+    before: Snapshots = {}
     try:
-        ctx = base.context_from_env()
         if _usable(ctx):
             _, before = _before(ctx)
     except Exception as exc:  # observation must never break the launch
         print(f"wrapper: skipping detection ({exc})", file=sys.stderr)
         ctx = None
 
-    proc = subprocess.run(argv, env=game_env())
+    code = start()
 
     try:
         if _usable(ctx):
             _after(ctx, before)
     except Exception as exc:
         print(f"wrapper: could not store results ({exc})", file=sys.stderr)
+    return code
 
-    return proc.returncode
+
+def main(argv: list[str]) -> int:
+    """argv = the real game command (whatever stands behind %command%)."""
+    if not argv:
+        print("wrapper: no game command given", file=sys.stderr)
+        return 2
+
+    try:
+        ctx = base.context_from_env()
+    except Exception as exc:
+        print(f"wrapper: skipping detection ({exc})", file=sys.stderr)
+        ctx = None
+
+    return observed(ctx,
+                    lambda: subprocess.run(argv, env=game_env()).returncode)
 
 
 def hook(phase: str, source: str, app_id: str) -> int:

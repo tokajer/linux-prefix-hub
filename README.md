@@ -11,7 +11,7 @@ everywhere else.** Nothing to configure.
 linux-prefix-hub --scan                  # your games, from every launcher
 linux-prefix-hub --connect "Cyberpunk"   # let us learn from it
 linux-prefix-hub --status                # what we learned
-linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/
+linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/Games/
 ```
 
 ## What it does
@@ -29,7 +29,7 @@ linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/
   config*. Lutris and Heroic do it silently; Steam needs one click while Steam
   is closed (it overwrites its config on exit, so there is no way around that).
 - **Moving game data home**, optionally: a registry entry plus a symlink
-  pointing at the same folder in `~/Games/linux-prefix-hub/<Game>/`
+  pointing at the same folder in `~/Games/linux-prefix-hub/Games/<Game>/`
   (configurable in Settings). Games that respect Windows folders follow the
   registry, stubborn ones hit the symlink. Idempotent and self-healing — a
   Proton update that eats the symlink is repaired before the next launch.
@@ -39,6 +39,39 @@ linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/
   The game's own folder is listed the same way, with its full path, from the
   moment the game has been started once — in the window and in `--status`,
   and `--open` takes you there when nothing else is known yet.
+- **Extra options for a folder of your own**, too — and without any of the
+  machinery below: we start that game ourselves, so the overlay, the frame-rate
+  display and your own `NAME=value` lines are simply the environment it gets.
+  Started by a launcher of the game's own instead? Give the folder its own copy
+  of the Windows version (hardlinks, no disk space) and point that launcher at
+  it — a compatibility build reads its settings file from inside the container,
+  which is the one place such a launch can pick them up.
+- **Extra options per game** (Steam): a performance overlay, a frame-rate
+  display, a log file, or any `NAME=value` you like — for that one game and
+  nothing else. Steam runs games inside a container that filters the
+  environment, so launch options cannot do this; instead the game gets a
+  private copy of a compatibility build (made of hardlinks, so it costs no
+  disk space) carrying the settings. Turning it off puts everything back.
+- **Or an environment of your own**, belonging to no game at all: give it a
+  name, and it turns up in the compatibility list for you to pick wherever you
+  want it. Profiles from the `proton-instance` script can be taken over in one
+  step; its own folders are left exactly where they are.
+- **A game folder of your own** for a game no launcher knows about: give it a
+  name, pick which Windows version sets it up (a compatibility build Steam has,
+  or the Wine on your system), and you get
+  `~/Games/linux-prefix-hub/prefix/<Name>/` with the Windows part below it —
+  or wherever you point it, per folder or for good, because the disk with room
+  on it is usually not the one your home folder is on. Install the game into it from the window or with `--run-in`;
+  from then on it is an ordinary hand-installed game — listed, connectable,
+  and its data can be moved home like any other. **Start the game from here**
+  and it is watched like a Steam game: no launcher means no launch hook, so
+  the launch itself is what learns where the game saves. A game with its own
+  launcher counts too — the diff waits until nothing is running in the folder
+  any more, and that launcher may be a Linux program (an AppImage, say) that
+  runs the game through a compatibility build of its own. The name in the list and the short name of the folder are two
+  fields, and the Windows version can be changed afterwards. Deleting one again is one
+  button: the folder and the game in it go, what you moved into your home
+  folder stays, and folders this app did not make are never touched.
 - **Noticing new games** via a small background service, and telling you when
   a new version of this app is out.
 - **A window** (GTK 4 / libadwaita): your games as a list, one switch to
@@ -201,7 +234,7 @@ linux-prefix-hub --open "Elden Ring"                  # show it in the file mana
 Existing files are **never overwritten** — if both sides have a `save0.sav`,
 the one in the target wins and nothing is lost. The game must be closed.
 
-By default everything lands in `~/Games/linux-prefix-hub/<Game>/`. Change it in
+By default everything lands in `~/Games/linux-prefix-hub/Games/<Game>/`. Change it in
 the window under **Settings**, or:
 
 ```bash
@@ -319,7 +352,28 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --open GAME                    show its data folder (or the game folder)
   --hide GAME                    leave it out of the lists
   --unhide GAME                  put it back
+  --options GAME                 show a game's extra options
+  --options-on GAME              turn them on
+  --options-off GAME             turn them off again
+  --options-edit GAME            edit your own NAME=value lines in $EDITOR
+  --rebuild-options              move them all onto the newest version
+  --new-options NAME             an environment of your own, without a game
+  --list-options                 list your own environments
+  --import-options [--yes]       take over proton-instance's profiles
+  --new-game-folder NAME         set up a game folder of your own
+      [--engine NAME]            …with this Windows version (see the message)
+      [--target PATH]            …in this folder, just this once
+      [--alias SHORT]            …with this short name for the folder
+  --play FOLDER [--program P]    start the game in it and learn what it saves
+  --set-engine FOLDER            which Windows version it uses (with --engine)
+  --own-version FOLDER           give it a copy of that version, for it alone
+  --shared-version FOLDER        take that copy away again
+  --set-game-root PATH           where new game folders are made from now on
+  --run-in FOLDER --program P    install a program into one of those folders
+  --run-in FOLDER               …without --program: its Windows settings
+  --delete-game-folder F [--yes] delete one of those folders and the game in it
   --set-data-folder PATH         where moved game data is kept
+  --move-old-data [--yes]        bring data from the old default folder along
   --add-game-folder PATH         also look for games there
   --forget-game-folder PATH      stop looking there
   --ignore-path PATH             never report that path as a storage location
@@ -343,7 +397,8 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
 ~/.config/linux-prefix-hub/                               config, database
 ~/.config/linux-prefix-hub/pcgamingwiki/                  cached lookups
 ~/.config/systemd/user/linux-prefix-hub-watcher.service
-~/Games/linux-prefix-hub/<Game>/                          moved game data
+~/Games/linux-prefix-hub/Games/<Game>/                    moved game data
+~/Games/linux-prefix-hub/prefix/<Game>/                   game folders made here
 ```
 
 ## Verified on real hardware
@@ -442,6 +497,32 @@ Marked in the code at the relevant spots:
     afterwards, and that a game whose folder was moved back starts and finds
     its saves. Run it with `--keep-settings` the first time and the DB is
     still there if you want the app back.
+12. **Extra options on a real game** — the whole path is verified against a
+    synthetic Steam root (`tests/test_gameopts.py`, plus a throwaway `HOME`):
+    the hardlink copy, the generated settings file, the rewritten manifest and
+    the `config.vdf` mapping. What only real hardware can answer is whether
+    the game then *starts* with them: turn them on for one game, check that
+    Steam's compatibility list shows it, play it, and confirm the overlay
+    appears. Two things to watch specifically — `config.vdf` is a bigger file
+    than the launch options one and we round-trip it through our own parser,
+    so compare it against the `.bak` afterwards; and a game whose folder has
+    no number in it needs an app id named for it (`gameopts.APPID_FALLBACK`),
+    which is exactly the case the fallback exists for.
+13. **A game folder started by something else** — the folder name always
+    carries a digit (`newprefix._numbered`) because a compatibility build's
+    `protonfixes` reads the app id out of the path and aborts on a path
+    without one. Verified from a launcher's log on one machine (`IndexError:
+    list index out of range` in `fix.py`); worth confirming on yours if you
+    point another launcher at one of these folders.
+14. **A game folder made from scratch** — the two commands, the environment
+    they get and the marker are verified against a stand-in for the launch
+    (`tests/test_newprefix.py`), so what is open is the launch itself: set one
+    up with a compatibility build *and* one with the Wine on your system,
+    install something into each, and check that the game starts afterwards.
+    Two things to watch specifically — a compatibility build wants a Steam
+    client directory (`STEAM_COMPAT_CLIENT_INSTALL_PATH`) and complains in
+    ways that end up in our error message, and the system's Wine may ask
+    about Mono/Gecko in a window of its own while the app waits for it.
 
 ## Documentation
 

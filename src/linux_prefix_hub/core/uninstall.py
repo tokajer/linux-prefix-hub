@@ -18,6 +18,11 @@ inside *other* people's configuration and outlive us:
      shim while the option still points at it and the game does not start.
      That is not data loss, but it is the user's library broken by our
      cleanup, so it is treated exactly as seriously.
+  3. **Extra options.** A game with extra options is pointed at a private
+     compatibility build we made for it (`core/gameopts.py`). Delete that
+     build and leave the pointer and Steam quietly starts the game with a
+     different one. So the pointer goes first and the build second, and both
+     before anything is deleted.
 
 Hence the order in `run()`, and hence the rule that gives this module its
 shape: **a step that fails stops the uninstall where it is.** Each stage
@@ -36,7 +41,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import db, integrate, paths, redirect, registry
+from . import db, gameopts, integrate, paths, redirect, registry
 from .i18n import _
 
 
@@ -68,18 +73,25 @@ def moved_folders() -> list[dict[str, Any]]:
     return found
 
 
-def connected_games() -> list[dict[str, Any]]:
+def all_games() -> list[dict[str, Any]]:
+    """One library scan, shared by everything below that needs a name."""
+    from ..adapters import base
+    return list(base.iter_games())
+
+
+def connected_games(known: list[dict[str, Any]] | None = None
+                    ) -> list[dict[str, Any]]:
     """Games whose launcher config still names one of our shims.
 
     Asked of the adapters, not of our own DB: the launcher's config is the
     thing that has to be clean when we are gone, and it can name a shim for
     a game we never got to learn anything about.
     """
-    from ..adapters import base
-    return [game for game in base.iter_games() if game.get("managed")]
+    games = all_games() if known is None else known
+    return [game for game in games if game.get("managed")]
 
 
-def blockers() -> list[str]:
+def blockers(known: list[dict[str, Any]] | None = None) -> list[str]:
     """Reasons to say "not now" before touching anything.
 
     `run()` is safe without this -- it stops on the first failure with
@@ -97,7 +109,14 @@ def blockers() -> list[str]:
             named.add(name)
             found.append(_("{game} is running. Close it first.", game=name))
 
-    if any(str(g.get("source")) == "steam" for g in connected_games()):
+    # Two things need Steam's own files: taking our shim back out of a
+    # game's launch options, and taking back the compatibility build a game
+    # with extra options points at.
+    needs_steam = (any(str(g.get("source")) == "steam"
+                       for g in connected_games(known))
+                   or any(source == "steam"
+                          for source, _id in gameopts.enabled_games()))
+    if needs_steam:
         try:
             from ..adapters import steam
             if steam.steam_is_running():
@@ -125,18 +144,41 @@ def removable_files() -> list[Path]:
     return [f for f in files if f.exists() or f.is_symlink()]
 
 
+def games_with_options(known: list[dict[str, Any]] | None = None
+                       ) -> list[dict[str, Any]]:
+    """Every game we made a private compatibility build for.
+
+    Named from the library where the launcher still has it, from the prefix
+    DB where it does not, and from its bare id where neither knows it any
+    more -- the profile is keyed by id and outlives both.
+    """
+    games = all_games() if known is None else known
+    by_key = {(str(g.get("source")), str(g.get("app_id"))): g for g in games}
+    found: list[dict[str, Any]] = []
+    for source, app_id in gameopts.enabled_games():
+        game = by_key.get((source, app_id))
+        name = str(game.get("game_name") or "") if game else ""
+        if not name:
+            entry = db.find_prefix(source, app_id)
+            name = str((entry[1].get("game_name") if entry else "") or app_id)
+        found.append({"source": source, "app_id": app_id, "game_name": name})
+    return found
+
+
 def plan() -> dict[str, Any]:
     """What `run()` would do, without doing any of it."""
     folders = moved_folders()
+    known = all_games()
     return {
         "folders": folders,
         "games": sorted({f["game_name"] for f in folders}),
-        "connected": connected_games(),
+        "connected": connected_games(known),
+        "options": games_with_options(known),
         "pending": len(db.pending_redirects()),
         "files": removable_files(),
         "gearlever": str(integrate.detect_gearlever() or ""),
         "config_dir": str(paths.CONFIG_DIR),
-        "blockers": blockers(),
+        "blockers": blockers(known),
     }
 
 
@@ -242,6 +284,28 @@ def disconnect_all() -> dict[str, Any]:
             "manual": manual}
 
 
+def clear_options_all() -> dict[str, Any]:
+    """Give every game with extra options back to Steam's own choice.
+
+    `gameopts.turn_off` does the two halves in the order that matters --
+    pointer first, build second -- so this only has to walk the list and
+    stop on the first one that would not go.
+    """
+    done: list[str] = []
+    failed: list[str] = []
+    for game in games_with_options():
+        try:
+            result = gameopts.turn_off(game)
+        except Exception as exc:               # noqa: BLE001 -- reported
+            failed.append(f"{game['game_name']} -- {exc}")
+            continue
+        if result.ok:
+            done.append(str(game["game_name"]))
+        else:
+            failed.append(f"{game['game_name']} -- {result.message}")
+    return {"ok": not failed, "cleared": done, "failed": failed}
+
+
 def stop_watcher() -> None:
     """Stop and forget the systemd user unit. Quiet, like `install_*`.
 
@@ -317,6 +381,16 @@ def run(keep_settings: bool = False) -> dict[str, Any]:
                              "was removed -- disconnect them and try "
                              "again.")}
 
+    options = clear_options_all()
+    if not options["ok"]:
+        return {"ok": False, "stage": "options",
+                "reverted": reverted["reverted"],
+                "disconnected": hooks["disconnected"], **options,
+                "message": _("Your game data is back and the games are "
+                             "disconnected, but some games still use extra "
+                             "options. Nothing was removed -- turn those off "
+                             "and try again.")}
+
     pending = list(db.pending_redirects())
     for key in pending:
         source, _sep, app_id = key.partition(":")
@@ -330,6 +404,7 @@ def run(keep_settings: bool = False) -> dict[str, Any]:
             "notes": reverted["notes"],
             "disconnected": hooks["disconnected"],
             "manual": hooks["manual"],
+            "cleared": options["cleared"],
             "pending": len(pending),
             "removed": removed,
             "kept_settings": keep_settings,

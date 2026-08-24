@@ -83,12 +83,15 @@ def get_adapter(source: str):
 def source_label(source: str) -> str:
     """The name of a source as the user should read it.
 
-    The ids are ours; "generic" in particular is a word for this codebase, not
-    for the person who installed a game by hand.
+    The ids are ours; "generic" in particular is a word for this codebase and
+    never for the person reading the list. The other three name the launcher
+    that manages those games, and this group is the one *this* app manages --
+    the folders it made itself land here -- so it carries this app's name.
+    Not translated, because a program's name is the same in every language.
     """
-    from ..core.i18n import _
+    from ..core import paths
     if source == "generic":
-        return _("hand-installed")
+        return paths.APP_TITLE
     return {"steam": "Steam", "lutris": "Lutris",
             "heroic": "Heroic"}.get(source, source)
 

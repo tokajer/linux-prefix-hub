@@ -358,9 +358,28 @@ called before each launch.
 
 `default_target` resolves its root through `db.redirect_root()` — configurable
 (`redirect_root` in config.json, the Settings dialog, `--set-data-folder`),
-default `~/Games/linux-prefix-hub/`. Changing it never strands data: a moved
+default `~/Games/linux-prefix-hub/Games/`. Changing it never strands data: a moved
 location stores its absolute `redirect_target`, so only *future* moves follow
 the new root.
+
+### Moving a moved folder again
+
+`relocate(fingerprint, win_path, target)` is not undo + redirect: that walks
+the data through the prefix and back out, and in between the game folder holds
+everything the move exists to keep out of it. The link, the registry and the
+DB all name one directory, so the directory moves once (through the same
+`_conflicts` / `_merge_move` pair, with the same refusal on two copies) and
+all three are re-pointed. `_prune_ours` then drops what the move emptied —
+`rmdir` only, inside-out, and upwards no further than `paths.APP_GAMES_DIR`.
+
+`stale_targets()` is the one-off this exists for: the default redirect root
+moved a level down into `paths.APP_GAMES_DIR/Games`, so a target sitting
+*directly* below the app folder is one an earlier version put there. That
+shape is the whole test on purpose — a folder the user named with `--target`
+is theirs, and moving it because we changed our mind about a default is the
+kind of surprise this app exists to prevent. `move_stale()` runs them all and
+lets each one fail on its own (`--move-old-data`, and a row in Settings that
+appears only while there is something to move).
 
 `location_path(entry, loc)` answers "where are these files right now" for any
 location in either space — the redirect target if moved, the install folder for
@@ -536,8 +555,8 @@ Two details worth keeping:
   two versions is a question only the player can answer.
 - **Cleanup is `rmdir` and nothing else.** `_prune_empty` removes the folders
   we made once they are empty and stops the moment one is not. It also drops
-  the default redirect root itself — `~/Games/linux-prefix-hub`, which is
-  ours — but never `~/Games`, and never a root the user configured.
+  the default redirect root itself — `~/Games/linux-prefix-hub/Games`, which
+  is ours — but never `~/Games`, and never a root the user configured.
 
 `keep_settings` decides whether `~/.config/linux-prefix-hub` goes with it.
 The AppImage GearLever manages is never deleted: it placed that file.
@@ -547,6 +566,355 @@ sits in a launch command the user wrote, so those games are *named* in the
 result instead of silently counted as done.
 
 ---
+
+## `core/gameopts.py` — extra options for one game
+
+Everything else in this app answers "where does this game keep its things".
+This module answers a different question — "how does this game run" — and it
+is here because the obvious way to answer it does not work.
+
+**Why the obvious way fails.** Steam does not start the game; it starts a
+container (the Steam Linux Runtime), and the container decides which
+environment variables reach what runs inside it. Launch options and our own
+launch hook both sit outside it. So "give this one game a performance
+overlay" cannot be done from where the rest of the app stands.
+
+**What works instead.** The compatibility build reads a `user_settings.py`
+next to itself, from inside the container, and puts what it finds into the
+game's environment. That file belongs to the build, not to a game — so we
+give the game a build of its own: a copy of an installed one, made of
+hardlinks, with its own `user_settings.py`, and Steam pointed at it.
+
+### Two halves
+
+**The profile** is what the user chose, and knows nothing about any of the
+above. Named switches (`SWITCHES`) for the things people actually want, plus
+free `KEY=value` lines for anyone who knows the names. Stored in
+`config.json` under `game_options`, keyed by `db.game_key` like everything a
+game can own before it has a folder. `env_for()` folds the two together, and
+the user's own lines come last and therefore win.
+
+When Lutris and Heroic get this, they set the same variables their own way
+and read this same profile. Nothing in this half will have to change.
+
+**The private build** is Steam's mechanism and only Steam's:
+`list_bases()` / `resolve_base()` pick what to copy, `build()` copies it,
+`remove()` takes it away, `rebuild_all()` moves every game onto the newest
+build of the family it follows.
+
+### The two rules that keep it from destroying something
+
+**A hardlink copy is one file with two names.** `<copy>/user_settings.py`
+*is* `<GE-Proton>/user_settings.py` until somebody breaks the link, and
+opening it for writing truncates the build the user installed. Everything
+written into a copy goes through `_replace`, which unlinks first. This is
+not a hypothetical: it is the first thing that goes wrong when the copy is
+made with `cp -al` and the settings file written with a plain redirect.
+
+**The directory we delete has to be ours.** `compatibilitytools.d` holds
+builds the user installed themselves, and `remove()` is an `rm -rf`. Every
+destructive path checks for the `MARKER` file first, and `build()` refuses
+rather than overwrite a directory that does not have it. `build()` also
+refuses while the game is running — the first thing it does is delete the
+copy the running game is executing out of.
+
+### Environments that belong to no game
+
+A game is not the only thing that wants its own environment: a hand-installed
+game, a launcher that is not Steam, or just "this one setup I keep coming back
+to". Those get `source == "custom"` and an id that is a slug of the name the
+user typed, which means `db.game_key` gives them `custom:daoc` and every
+function here — `read`, `write`, `build`, `turn_on`, `turn_off`,
+`rebuild_all` — takes them without a second code path. `as_game()` is the
+whole adapter: a dict with a source, an id and a name, which is all any of it
+ever looked at.
+
+An environment has **two names**, and they are not the same thing. The
+*alias* is what it is called on disk and in Steam's own list — short, typed
+once, never changed, because that folder name ends up inside somebody else's
+configuration (the Eden launcher's `protonSteamPath` points straight at this
+directory) and moving it takes their setup with it. The *title* is what our
+own window calls it, and `rename()` changes only that: "Dark Age of Camelot"
+in the list, `LinuxPrefixHub-daoc` on disk.
+
+Two differences, both because there is no game behind one:
+
+- **Nothing is pointed at it.** `turn_on` skips `set_compat_tool` entirely and
+  says so; the user picks it themselves, wherever they want it. `turn_off`
+  likewise never touches `config.vdf`.
+- **Its id is never a number**, which is exactly the case `APPID_FALLBACK`
+  exists for — so a custom environment always carries one.
+
+`title` is stored alongside, because the slug cannot be turned back into what
+was typed: "Old Game" and "Old-Game" are one directory but two different
+words.
+
+### Taking over the script this grew out of
+
+`importable()` reads `~/.config/proton-instances/*.env` — the profiles left by
+the shell script this module started as — and offers the ones we do not have.
+`import_legacy()` copies one into our config and **nothing else**: the
+script's own instance directory stays exactly where it is. Two tools writing
+into one directory is how a setup that works gets lost.
+
+The base stored next to those profiles can be an absolute path into some other
+launcher's runner folder. `_legacy_base()` reduces it to a name and keeps it
+only if a build of that name is actually installed — an import carries a
+choice across or falls back to the default family, never a broken one.
+
+### The folder name is for people; the marker is the identity
+
+A copy is called `LinuxPrefixHub-<game name>`, because it is a row somebody
+scrolls past in Steam's list and in `compatibilitytools.d`, and a column of
+app ids there tells nobody which game is which. The id is appended only when
+two games really do share a name — the one case a name cannot settle itself.
+
+That means the folder name cannot be *computed* from a game any more, so
+`find_instance()` looks a copy up by the `key` in its marker instead. Which is
+what makes renaming safe: `build()` removes whatever copy already belongs to
+this game before writing the new one, so a game that was renamed — or a copy
+from the first release, when copies were named after the id — is replaced
+rather than stranded.
+
+`display_name()` returns that same string rather than a prettier one. Internal
+name and display name are two keys in the same manifest, and a launcher that
+reads both lists one copy twice.
+
+### A name that never changes over contents that do
+
+`outdated()` compares the build's own `version` file, not just its name.
+
+A profile that follows a *family* moves visibly: `GE-Proton10-34` becomes
+`GE-Proton11-5`. A profile that follows a **fixed name kept up to date by
+something else** — `Proton-GE Latest`, maintained by ProtonPlus — does not
+move at all. The name is constant while what is behind it is replaced, so
+comparing names calls such a copy current forever.
+
+The copy keeps working: the hardlinks hold the files it was made from alive
+even after the folder they came from is overwritten. It is frozen, not broken
+— which is exactly why somebody has to be told. `base_version()` reads the
+file, `build()` records it in the marker and in the profile, and `outdated()`
+compares it.
+
+Nothing rebuilds on its own. Copying gigabytes is not something to start
+behind someone's back, possibly while they are playing.
+
+### The overlay switch sets one variable, deliberately
+
+`SWITCHES["overlay"]` is `{"MANGOHUD": "1"}` and nothing else. The obvious
+next step — adding a sensible `MANGOHUD_CONFIG` layout — is wrong, because
+that variable *replaces* the user's `~/.config/MangoHud/MangoHud.conf` rather
+than adding to it. A helpful default there silently throws away whatever they
+set up in Goverlay. Switching the overlay on is ours to do; what it shows is
+theirs.
+
+### A build that cannot start anything
+
+`build()` refuses a base with no `files/share/default_pfx` before it copies
+anything. That is the folder every game folder is stamped out of, and a build
+without it starts nothing — but the failure surfaces in Steam's log at the
+moment the game starts, a long way from the switch that caused it. It goes
+missing for real: a "latest" directory some other tool keeps up to date is one
+interrupted update away from being empty, and copying that faithfully gets you
+a faithful copy of something broken.
+
+### The manifest is edited line by line
+
+`compatibilitytool.vdf` gets a new internal name and `display_name` so Steam
+does not collide the copy with the build it came from. Not through
+`core/vdf.py` (rule 2): most of that file is the build author's comments
+explaining the format, and our tokeniser drops them. The internal name is
+matched by shape — the lone quoted token inside the `compat_tools` block —
+not by value, because the value is whatever the build is called.
+
+### A game folder with no number in it
+
+A compatibility build reads its own app id back out of the game folder's
+path. A game whose id is not a number has no number there either, the build
+finds nothing, and it refuses to start the game at all — which looks exactly
+like "turning the extra options on broke my game". `env_for()` names an app
+id for those games (`APPID_FALLBACK`) and stays out of the way of anyone who
+names their own.
+
+### Where the pointer lives
+
+`adapters/steam.set_compat_tool()` writes `CompatToolMapping` in
+`config.vdf`. Same rules as the launch options next to it: only while Steam
+is closed, with a `.bak`, and a `manual` result naming the build when Steam
+is open so the user can pick it themselves. `clear_compat_tool()` takes back
+only a mapping that still names our own copy — a choice the user has since
+made themselves is theirs.
+
+`turn_on()` and `turn_off()` are the two whole operations, and `turn_off()`
+runs them in the reverse order for a reason: the pointer goes first, because
+a build Steam still points at but that is no longer there is a game Steam
+quietly starts with a different one.
+
+## `core/newprefix.py` — game folders the user makes
+
+Every other module in this project *finds* game folders: a launcher made one
+and we read it. This one makes one, for the games no launcher has — an
+installer from the publisher, an old disc, a tool that has to live next to the
+game.
+
+### Two layers, one shape
+
+A Windows environment can be created by a compatibility build or by the
+system's own Wine, and the only difference is which program gets started:
+
+| | command | what points at the folder |
+|---|---|---|
+| compatibility build | `<build>/proton run wineboot -u` | `STEAM_COMPAT_DATA_PATH=<folder>` |
+| the system's Wine | `wine wineboot -u` | `WINEPREFIX=<folder>/pfx` |
+
+A build creates `pfx` below the folder it is given; Wine creates whatever
+`WINEPREFIX` names. Pointing the second one at the same `pfx` is what makes
+both end at `<folder>/pfx` — which is the shape `adapters/generic` already
+discovers, and `pfx` is one of its `CONTAINER_NAMES`, so the game is named
+after the folder above it. That is the whole integration: a folder made here
+is listed, connected, looked up and redirected by code that knows nothing
+about this module. The folder above `pfx` stays empty and is where the game
+itself gets installed.
+
+`engines()` collects both places builds live — `compatibilitytools.d` (minus
+the per-game copies `core/gameopts.py` puts there) and `steamapps/common` —
+plus `wine` from `PATH`. `default_engine()` follows the same default the extra
+options do (`gameopts.DEFAULT_FAMILY`), so the app has one answer to "which
+one" and not two.
+
+### Where it goes
+
+`root()` is the remembered place (`prefix_root` in `config.json`,
+`paths.DEFAULT_PREFIX_ROOT` = `~/Games/linux-prefix-hub/prefix` until somebody
+says otherwise, `set_root()` to change it), and `create()`
+takes a `target` on top of it for one folder only. Both exist because these
+folders hold the *install*, not a save file: the disk with room on it is
+routinely not the one the home folder is on. The default is a subfolder of
+the app's own folder in `~/Games` (next to the redirect root, never the same
+folder) — that directory is the user's and very likely older than this app — and
+`adapters/generic.DEFAULT_ROOTS` names it, so the scan finds these folders
+even when the config that made them is gone. Anything outside the places
+`adapters/generic` already looks is remembered as a game folder
+(`_findable`), or the app would not find what it just made.
+
+### Starting the game is where this app learns
+
+Every other source has a launcher whose config carries our hook. A folder made
+here has none, so a game started from the user's own desktop file is invisible
+however long they play it — which is exactly what "it never notices what my
+game changed" looks like. `launch()` starts it instead, through
+`wrapper.observed()`: the same two snapshots, the same diff, the same DB entry
+a Steam game gets. `install()` deliberately does not observe — what an
+installer writes is the game, not the place the game saves.
+
+What gets started is not always a Windows program: `is_native()` recognises a
+launcher of the game's own — an ordinary Linux binary that runs the game
+through a compatibility build it manages itself, pointed at this folder — and
+starts it as it is, with `WINEPREFIX` and `STEAM_COMPAT_DATA_PATH` naming this
+folder in both the spellings a launcher might read. Sending that through
+`proton run` would hand Windows a Linux binary.
+
+`_wait_until_idle()` is the part that makes this true for real games. A game
+with its own launcher outlives the process we waited for, so the diff would
+compare a save file that is still being written; the prefix itself answers
+when everything is over (`registry.prefix_in_use`, polled).
+
+The install folder is named as a second space only when it is *not* the folder
+we made: that one holds `pfx`, and naming it would report every change inside
+the prefix a second time as a change in the game's own folder.
+
+### Extra options, and a version for one folder alone
+
+`core/gameopts.py` builds a private compatibility build for a Steam game
+because Steam starts that game inside a container that filters the
+environment. A folder made here is started by `launch()`, so none of that is
+needed: `gameopts.own_folder()` says so, `turn_on`/`turn_off` store the profile
+and nothing else, and `launch()` passes `env_for(profile)` straight into the
+process.
+
+`make_private()` exists for the other case — when something else starts the
+game. A launcher of the game's own does not ask us for an environment, but it
+can be pointed at a build, and a build reads its own `user_settings.py` from
+inside the container. So the folder gets a copy of its build (hardlinks, rule
+15, the same code the Steam side uses), the copy carries this game's options,
+its path is in the result so it can be pasted into that launcher, and `run()`
+starts the game with it from then on. `set_engine()` rebuilds it — a version
+stored next to a copy of the old one is not a version change — and `delete()`
+takes it with the folder.
+
+### The folder name has to contain a number
+
+`_numbered()`. A compatibility build's `protonfixes` works out which game it is
+running from the environment, and its last resort is to read the app id
+straight out of the path:
+
+```python
+re.findall(r'\d+', os.environ['STEAM_COMPAT_DATA_PATH'])[-1]   # IndexError
+```
+
+A path without a single digit raises `IndexError` and the launch dies before
+the game starts. We set `SteamAppId` when we start the game ourselves, so this
+never shows up there — it shows up in the log of whatever *else* starts the
+game, as a Python traceback that reads like a broken Proton install. So the
+folder name carries a digit: the name and not the whole path, because paths
+move and a folder that works in `/mnt/daten2` and stops working in
+`/mnt/spiele` is worse to own than one called `Thief-1`. The name in our lists
+is unaffected.
+
+### Two names, and a version that can change
+
+`create(name, engine, target, alias)` — the alias is the folder on disk, typed
+once and never moved because a path is what everything else points at; the
+name is what the list says, kept in the marker, read back by
+`generic.game_name_for()` and changeable with `rename()`. `set_engine()`
+re-points the folder at a different build (by exact name — `find_engine`'s
+family fallback answers "what runs this now", which is not an answer to
+somebody choosing). Nothing is rebuilt: the build is not part of the folder.
+
+### The marker travels with the folder
+
+`<folder>/.linux-prefix-hub-env` holds which engine made it. Not our config:
+the folder is the thing that gets moved to another disk, copied and restored
+from a backup, and an answer that travels with it is still true afterwards.
+It sits above `pfx` and never inside it — what is below `pfx` belongs to
+Windows and ends up in every copy of that game.
+
+`find_engine()` accepts that the build named there can be gone, and falls back
+to the newest one of the same family (`gameopts.family`). A folder whose build
+was replaced would otherwise be one nobody can start a program in again, and
+there is no screen anywhere that repairs that.
+
+### Deleting one is the reverse, and it is not `uninstall`
+
+`delete()` refuses anything without the marker — the folder it could be
+pointed at by mistake is one with somebody's games in it — and refuses while
+the game runs. Then it removes the tree and everything keyed by that game
+(the DB entry, a hidden flag, a pending move, confirmed lookups), because
+what is left otherwise is a row in the list nobody can open.
+
+What it deliberately does **not** do is fetch moved data back first. Removing
+the app does that (rule 14) because the game stays and only we go; here the
+game is what goes, and moving saves into a folder that is about to be deleted
+is how they are lost. `shutil.rmtree` removes the links to that data without
+following them, and the result names where it stayed. `_forget_root()` stops
+watching a folder we only watched for that one game — never one the user
+named themselves, never one that still holds another game.
+
+### Two things that would bite
+
+A build reads its own app id back out of `STEAM_COMPAT_DATA_PATH`, finds a
+folder name where it expects a number, and refuses to start anything — the
+same trap `gameopts.env_for()` documents, and the same fallback
+(`APPID_FALLBACK`) is used here.
+
+Every process started here gets `desktop.child_env()`. A compatibility build
+is a Python program, and the AppImage's `PYTHONHOME` points at a stdlib the
+build cannot use (rule 4). `install()` additionally runs from the program's
+own directory, because an installer looks for its data files next to itself.
+
+**Whether it worked is decided by the folder, not by the exit code**:
+`create()` asks `base.is_prefix()` afterwards, and a boot that left nothing
+behind is a failure however it exited.
 
 ## `core/desktop.py` — handing a folder to the desktop
 
@@ -597,7 +965,9 @@ Lutris adapter so user configs are not reformatted.
 `visible_games(games)`, `context_from_env()`, `context_for(source, app_id)`,
 `is_prefix(path)`,
 `user_dir_for(prefix)`, `source_label(source)` (the id is internal, the label
-is what the user reads), and `HookResult` (ok / manual / message / detail).
+is what the user reads — and `generic` reads as the app's own name, because
+that group is the one this app manages and where the folders it makes land),
+and `HookResult` (ok / manual / message / detail).
 
 `iter_games` isolates each adapter: a launcher with a broken config drops out
 of the list instead of taking the scan down.

@@ -8,10 +8,52 @@ three files a task actually touches.
 those saves into `~/Games/<Game>/` with a registry entry + symlink. Users never
 see the words prefix, Wine or `steamuser`.
 
+
+
+## Approach
+- Read existing files before writing. Don't re-read unless changed.
+- Thorough in reasoning, concise in output.
+- Skip files over 100KB unless required.
+- No sycophantic openers or closing fluff.
+- No emojis or em-dashes.
+- Do not guess APIs, versions, flags, commit SHAs, or package names. Verify by reading code or docs before asserting.
+
+## Output
+- Return code first. Explanation after, only if non-obvious.
+- No inline prose. Use comments sparingly - only where logic is unclear.
+- No boilerplate unless explicitly requested.
+
+## Code Rules
+- Simplest working solution. No over-engineering.
+- No abstractions for single-use operations.
+- No speculative features or "you might also want..."
+- Read the file before modifying it. Never edit blind.
+- No docstrings or type annotations on code not being changed.
+- No error handling for scenarios that cannot happen.
+- Three similar lines is better than a premature abstraction.
+- Do not commit anything
+
+## Review Rules
+- State the bug. Show the fix. Stop.
+- No suggestions beyond the scope of the review.
+- No compliments on the code before or after the review.
+
+## Debugging Rules
+- Never speculate about a bug without reading the relevant code first.
+- State what you found, where, and the fix. One pass.
+- If cause is unclear: say so. Do not guess.
+
+## Simple Formatting
+- No em dashes, smart quotes, or decorative Unicode symbols.
+- Plain hyphens and straight quotes only.
+- Natural language characters (accented letters, CJK, etc.) are fine when the content requires them.
+- Code output must be copy-paste safe.
+
+
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q            # 297 tests, ~1s, no real Steam needed
+.venv/bin/python -m pytest -q            # 349 tests, ~1s, no real Steam needed
 .venv/bin/ruff check src tests           # lint (config pinned in pyproject)
 PYTHONPATH=src python -m linux_prefix_hub --scan
 HOME=/tmp/x PYTHONPATH=src python -m linux_prefix_hub   # setup flow, safely
@@ -41,23 +83,25 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
 | `core/db.py` | `config.json` (JSON) + `prefixes.db` (**SQLite**, three writers). `upsert_prefix` merges and preserves `USER_FIELDS`/`LOCATION_USER_FIELDS`; `prune_locations` drops what a filter should have caught, never a user's. Columns for what we query, `extra` JSON for the rest; a pre-SQLite `prefixes.json` is folded in once. Anything a game can own **before it has a prefix** (`pending_redirects`, `hidden_games`) lives in the config, keyed by `game_key` = `source:app_id` |
 | `core/snapshot.py` | mtime snapshot → diff → storage locations, in **two** spaces (prefix + install folder); the `IGNORE_*` filters (shader caches, logs, …) plus the user's own; pending snapshots for the 2-process hook flow |
 | `core/pcgw.py` | PCGamingWiki lookup: article → `{{Game data/…}}` → our locations. Optional, cached, **never on the launch path** (the wrapper reads the cache only). It **suggests**: `lookup()` writes nothing, `confirm()` is the user's yes, `on_disk()` drops what is not there |
+| `core/gameopts.py` | Extra options per game (`own_folder()`: a folder `newprefix` made needs no build at all -- we start that game, so the profile is just its environment) **and standalone ones the user names** (`custom:<slug>`, no launcher, nothing pointed at them); one-way import of the `proton-instance` script's profiles. The profile (switches + free `KEY=value`, launcher-neutral) and the private compatibility build that carries them into the container. **Hardlink copy** -- `_replace` unlinks before writing, or the write lands in the build it was copied from. Refuses a base with no `default_pfx` — copying a half-installed build faithfully gets you a faithful copy of something broken. Copies are named after the **game**, found again by the `key` in their marker; `outdated()` compares the base's `version` file, because a "latest" name never changes while its contents do. Never on the launch path |
+| `core/newprefix.py` | The one place that **makes** a game folder instead of finding one. `<root>/<Name>/pfx` for both layers -- a compatibility build (`proton run`, `STEAM_COMPAT_DATA_PATH`) and the system's `wine` (`WINEPREFIX`) -- so `adapters/generic` discovers it and nothing else needs a second code path. Which layer built it is in the folder's own marker, not in our config: the folder is what gets moved and copied. **A folder's name must contain a digit** (`_numbered`): a build's `protonfixes` reads the app id out of `STEAM_COMPAT_DATA_PATH` with a digit regex and dies on a path without one -- invisible to us (we set `SteamAppId`), fatal for a launcher of the game's own. **Starting the game is the only place these folders are ever observed** -- no launcher means no hook, so `launch()` goes through `wrapper.observed()` and waits for the folder to go quiet first (a game's own launcher exits before the game does). `delete()` needs that marker before it removes anything, and leaves moved data where the user put it -- the game is what goes here, so fetching saves back into a doomed folder would lose them. Never on the launch path |
 | `core/desktop.py` | Hand a folder to the user's file manager. `xdg-open` first |
 | `core/wrapper.py` | The launch hook, both shapes (wrap and pre/post). Must never break a launch |
 | `core/registry.py` | Surgical `user.reg` editing, `SHELL_FOLDERS` map, `prefix_in_use()` |
-| `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals. `cloud_warning()` names the other writer on that folder before the move |
+| `core/redirect.py` | Hybrid redirect: move data → symlink → registry → DB flags. `reapply()` self-heals. `cloud_warning()` names the other writer on that folder before the move. `relocate()` moves an already moved folder without walking it back through the prefix; `stale_targets()` finds only what an older default put there, never a target the user named |
 | `core/integrate.py` | AppImage relocation, the three shims, systemd unit, desktop entry (named after `paths.APP_ID`, see rule 15), icon. Idempotent |
 | `core/updater.py` | Velopack: `check`, then `download()` / `finish()` — two halves because an update can only be applied once **this process is gone**. `app_hook()` only in the AppImage. GearLever wins if present |
-| `core/uninstall.py` | Remove the app: revert every moved folder, disconnect every hook, *then* delete. A failed step stops the whole thing |
+| `core/uninstall.py` | Remove the app: revert every moved folder, disconnect every hook, hand every game with extra options back to Steam, *then* delete. A failed step stops the whole thing |
 | `core/vdf.py` | Valve KeyValues read **and write** (localconfig round-trip) |
 | `core/yamlite.py` | Lutris-shaped YAML subset; uses PyYAML when installed. **Read only** |
 | `adapters/base.py` | Adapter contract, `iter_games()`, `visible_games()` (drops what the user hid — only the two places that draw a list use it), `context_from_env()`, `user_dir_for()` |
-| `adapters/steam.py` | Multi-library discovery; hook = launch options (needs Steam closed, else manual); `cloud_paths()` = Auto-Cloud from `remotecache.vdf` (UFS does not count — those files never enter the prefix) |
+| `adapters/steam.py` | Multi-library discovery; hook = launch options (needs Steam closed, else manual); `cloud_paths()` = Auto-Cloud from `remotecache.vdf` (UFS does not count — those files never enter the prefix); `set_compat_tool()` = which compatibility build a game uses, in `config.vdf`, same Steam-closed rule and a `.bak` |
 | `adapters/lutris.py` | pga.db + YAML discovery; hook = `prelaunch_command`/`postexit_command` |
 | `adapters/heroic.py` | GamesConfig JSON discovery; hook = `wrapperOptions` (wrap shape, like Steam) |
 | `adapters/generic.py` | Hand-rolled setups: discovery by shape alone, path = id, no config to hook — the user gets a command. Runs **last**, skips what the others claim |
 | `daemon/watcher.py` | inotify on steamapps + periodic rescan; new-game and update notifications |
 | `gui/welcome.py` | Terminal setup flow. Logic split from presentation, shared with the GTK UI |
-| `gui/app.py` | GTK4/libadwaita window: game list grouped per launcher, connect switch, lookup button, hide button, game-folder row, move-home switch; the header's eye toggle shows hidden games again; the settings dialog holds the data folder, the two switches and removing the app. Presentation only |
+| `gui/app.py` | GTK4/libadwaita window: game list grouped per launcher, connect switch, lookup button, hide button, game-folder row, move-home switch; an extra-options row per Steam game with its own dialog; the header's eye toggle shows hidden games again; the settings dialog holds the data folder, the two switches and removing the app. Presentation only |
 | `gui/tray.py` | Tray icon spoken straight onto the session bus (StatusNotifierItem + dbusmenu). **No GTK in it** — AppIndicator is GTK3-linked and would abort a GTK4 process. Degrades to `live == False` |
 | `gui/tasks.py` | One function: run blocking work off the GTK main loop, land the result via `idle_add` |
 
@@ -139,7 +183,16 @@ The GUI needs system PyGObject, which the venv does not have. Run it with
     a step that fails stops it there — each stage on its own leaves a machine
     that works. Cleanup is `rmdir` only, never `rmtree` on anything that
     could hold game data.
-15. **`paths.APP_ID` is one string in three places, and they have to agree.**
+15. **A hardlink copy is one file with two names, and writing to it writes
+    into the original.** `core/gameopts.py` copies an installed
+    compatibility build with `os.link` so a per-game copy costs nothing --
+    which means `<copy>/user_settings.py` *is* `<GE-Proton>/user_settings.py`
+    until somebody breaks the link. Opening it for writing truncates the
+    build the user installed. Everything this module writes into a copy goes
+    through `_replace`, which unlinks first, and nothing it deletes is
+    touched without the `MARKER` file that says the directory is ours -- the
+    same directory holds builds the user installed themselves.
+16. **`paths.APP_ID` is one string in three places, and they have to agree.**
     The window carries it (`gui.app.main` sets it as the *program* name —
     that, not the application id, is what GTK sends as the Wayland `app_id` /
     X11 `WM_CLASS`), the desktop entry is named after it, and the icon is
@@ -164,7 +217,12 @@ table, not the file's absence, is what says the import happened),
 (`config.json` keys: `install_dir`, `redirect_root`, `language`,
 `online_lookup`, `game_folders`, `ignore_paths`, `setup_done`,
 `background_tray`, `pending_redirects`, `hidden_games`,
-`confirmed_lookups`, `update_check`/`update_notified`),
+`confirmed_lookups`, `game_options`, `prefix_root`,
+`update_check`/`update_notified`),
+`~/Games/linux-prefix-hub/{Games,prefix}/<Game>/` (moved game data and game
+folders the user made here -- one app folder inside `~/Games`, which stays
+theirs; `adapters/generic.DEFAULT_ROOTS` lists the `prefix` one so a scan
+finds those folders without the config),
 `~/.local/share/linux-prefix-hub/LinuxPrefixHub.AppImage`,
 `~/.local/bin/linux-prefix-hub-{wrapper,hook,daemon}`,
 `~/.config/systemd/user/linux-prefix-hub-watcher.service`.

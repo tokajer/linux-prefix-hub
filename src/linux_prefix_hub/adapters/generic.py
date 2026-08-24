@@ -54,6 +54,10 @@ SOURCE = "generic"
 DEFAULT_ROOTS = (
     "~/.wine",
     "~/Games",
+    # Where `core/newprefix.py` makes them by default. Listed here and not
+    # only in the config, so the folders this app made are found again even
+    # when the config is not the one that made them.
+    f"~/Games/{paths.APP_NAME}/prefix",
     "~/Wine",
     "~/wine",
     "~/.local/share/wineprefixes",
@@ -173,7 +177,15 @@ def game_name_for(prefix_path: str | Path) -> str:
     `~/.wine` carries no name at all, and "wine" is a word this app does not
     say to users (CLAUDE.md #6), so it gets a plain description instead.
     """
+    from ..core import newprefix
     from ..core.i18n import _
+
+    # A folder this app made carries the name the user typed for it. Its own
+    # folder name is only the short version of that (`newprefix.create`), so
+    # asking the folder would answer with the abbreviation.
+    chosen = newprefix.display_name(prefix_path)
+    if chosen:
+        return chosen
 
     path = _expand(prefix_path)
     name = path.name

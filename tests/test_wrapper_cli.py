@@ -404,7 +404,7 @@ def test_ignoring_a_path_cleans_up_what_was_already_recorded(monkeypatch,
 
 def test_the_default_save_folder_is_our_own(isolated_home):
     from linux_prefix_hub.core import db
-    assert db.redirect_root() == isolated_home / "Games/linux-prefix-hub"
+    assert db.redirect_root() == isolated_home / "Games/linux-prefix-hub/Games"
 
 
 def test_language_flag_translates_this_run(monkeypatch, capsys):

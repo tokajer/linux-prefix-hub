@@ -409,7 +409,7 @@ The three decisions worth remembering:
 - **Cleanup is `rmdir` and nothing else.** Never `rmtree` on anything holding
   game data: `rmdir` refuses on a directory with something left in it, which
   is exactly the guarantee needed. It also removes our own redirect root
-  (`~/Games/linux-prefix-hub`) once the last game has left it — but never
+  (`~/Games/linux-prefix-hub/Games`) once the last game has left it — but never
   `~/Games`, which is the reason the default put us one level below it, and
   never a root the user configured.
 

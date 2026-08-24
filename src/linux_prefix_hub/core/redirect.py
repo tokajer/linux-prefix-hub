@@ -37,12 +37,13 @@ refuses to resolve the resulting two-copies case by deleting one of them.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 from pathlib import Path
 from typing import Any
 
-from . import db, registry
+from . import db, paths, registry
 from .i18n import _
 
 
@@ -328,6 +329,134 @@ def undo(fingerprint: str, win_path: str,
               n=len(kept), source=str(source)),
             kept=kept, source=str(source))
     return RedirectResult(True, _("Moved back into the game folder."))
+
+
+def relocate(fingerprint: str, win_path: str,
+             target: str | Path | None = None) -> RedirectResult:
+    """Move an already redirected folder to a different place.
+
+    Deliberately not undo + redirect: that walks the data through the prefix
+    and back out, and in between the game folder holds everything the move
+    exists to keep out of it. The link, the registry and the DB all name one
+    directory -- so the directory moves once and all three are re-pointed.
+
+    Everything the first move promised still holds. `_conflicts` compares the
+    whole tree before anything moves, and a file that exists on both sides
+    stops it with both copies intact (rule 9).
+    """
+    entry = db.get_prefix(fingerprint)
+    if not entry:
+        return RedirectResult(False, _("Unknown game."))
+    root = registry.shell_folder_root(win_path)
+    source = _recorded_target(entry, root) if root else None
+    if not root or source is None:
+        return RedirectResult(False, _("Nothing to move."))
+
+    dest = Path(os.path.expanduser(str(target))) if target else \
+        default_target(entry.get("game_name", "Game"), root)
+    if os.path.realpath(source) == os.path.realpath(dest):
+        return RedirectResult(True, _("Already in {target}.",
+                                      target=str(dest)), target=str(dest))
+    if registry.prefix_in_use(entry["prefix_path"]):
+        return RedirectResult(False, _("The game is still running. Close it "
+                                       "and try again."))
+
+    if source.is_dir():
+        clashes = _conflicts(source, dest)
+        if clashes:
+            return RedirectResult(
+                False,
+                _("'{path}' is in two places at once: {n} file(s) are in "
+                  "{source} and in {target}. Nothing was moved -- compare "
+                  "the two and delete the copy you do not want.",
+                  path=root, n=len(clashes), source=str(source),
+                  target=str(dest)),
+                conflicts=clashes, target=str(dest), root=root)
+        _moved, skipped = _merge_move(source, dest)
+        if skipped:
+            return RedirectResult(False, _("Could not move '{path}'.",
+                                           path=root), conflicts=skipped)
+        _prune_ours(source)
+
+    ok, clashes = _replace_with_symlink(physical_path(entry, root), dest)
+    if not ok:
+        return RedirectResult(False, _("Could not move '{path}'.", path=root),
+                              conflicts=clashes)
+    registry.set_shell_folder(entry["prefix_path"], root, dest)
+    for loc in entry.get("storage_locations", []):
+        if registry.shell_folder_root(loc.get("win_path", "")) == root:
+            db.update_location(fingerprint, loc["win_path"],
+                               redirected=True, redirect_target=str(dest))
+    return RedirectResult(True, _("Moved to {target}.", target=str(dest)),
+                          target=str(dest), root=root, source=str(source))
+
+
+def _prune_ours(start: Path) -> None:
+    """Drop what the move emptied. `rmdir` and nothing else, ever.
+
+    Inside first, deepest last-in-first: `_merge_move` takes the files and
+    leaves the directories that held them, so the top of the tree is never
+    empty until the bottom of it is. A directory that still holds something
+    makes `rmdir` refuse, which is exactly the guarantee this needs.
+
+    Then upwards, but only inside `paths.APP_GAMES_DIR`: the folder we just
+    emptied is ours either way, the ones above it are only ours in there.
+    """
+    for child in sorted(start.rglob("*"), key=lambda p: -len(p.parts)):
+        if child.is_dir() and not child.is_symlink():
+            with contextlib.suppress(OSError):
+                child.rmdir()
+    current = start
+    while True:
+        try:
+            current.rmdir()
+        except OSError:
+            return                  # not empty, or not ours to remove
+        current = current.parent
+        if paths.APP_GAMES_DIR not in current.parents:
+            return
+
+
+def stale_targets() -> list[dict[str, Any]]:
+    """Data an earlier version left where the default folder used to be.
+
+    The old default was `<app folder>/<Game>/<Documents>` and the current one
+    is a level deeper (`paths.DEFAULT_REDIRECT_ROOT`), so a target sitting
+    *directly* below the app folder is one we put there under the old layout
+    and nowhere else. That shape is the whole test on purpose: a folder the
+    user named themselves with `--target` is theirs, and moving it because we
+    changed our mind about a default would be exactly the kind of surprise
+    this app exists to prevent.
+    """
+    found: list[dict[str, Any]] = []
+    for fingerprint, entry in db.load_prefixes().items():
+        for loc in entry.get("storage_locations", []):
+            if not (loc.get("redirected") and loc.get("redirect_target")):
+                continue
+            source = Path(str(loc["redirect_target"]))
+            if source.parent.parent != paths.APP_GAMES_DIR:
+                continue
+            root = registry.shell_folder_root(str(loc.get("win_path", "")))
+            if not root:
+                continue
+            dest = default_target(entry.get("game_name", "Game"), root)
+            if os.path.realpath(source) == os.path.realpath(dest):
+                continue
+            found.append({"fingerprint": fingerprint,
+                          "win_path": str(loc["win_path"]),
+                          "game_name": str(entry.get("game_name", "")),
+                          "source": str(source), "target": str(dest)})
+    return found
+
+
+def move_stale() -> list[RedirectResult]:
+    """Move all of them. One failure does not stop the others.
+
+    Each game is a whole move of its own, and a game that is running (or has
+    two copies of a file) must not keep the rest where they are.
+    """
+    return [relocate(item["fingerprint"], item["win_path"], item["target"])
+            for item in stale_targets()]
 
 
 def movable_roots(entry: dict[str, Any]) -> list[str]:

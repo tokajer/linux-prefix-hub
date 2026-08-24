@@ -80,7 +80,7 @@ def test_redirect_moves_data_and_links_it_back(game, isolated_home):
     result = redirect.redirect(fingerprint, "Documents/My Games/Quake")
     assert result.ok, result.message
 
-    target = isolated_home / "Games/linux-prefix-hub/Quake/Documents"
+    target = isolated_home / "Games/linux-prefix-hub/Games/Quake/Documents"
     assert (target / "My Games/Quake/save0.sav").read_text() == "progress"
 
     physical = prefix / "drive_c/users/steamuser/Documents"
@@ -102,7 +102,7 @@ def test_redirect_is_idempotent(game, isolated_home):
     fingerprint, _prefix = game
     assert redirect.redirect(fingerprint, "Documents/My Games/Quake").ok
     assert redirect.redirect(fingerprint, "Documents/My Games/Quake").ok
-    target = isolated_home / "Games/linux-prefix-hub/Quake/Documents"
+    target = isolated_home / "Games/linux-prefix-hub/Games/Quake/Documents"
     assert (target / "My Games/Quake/save0.sav").exists()
 
 
@@ -125,7 +125,7 @@ def test_redirect_refuses_when_a_file_is_on_both_sides(game, isolated_home):
     from linux_prefix_hub.core import redirect
     fingerprint, prefix = game
     target = (isolated_home
-              / "Games/linux-prefix-hub/Quake/Documents/My Games/Quake")
+              / "Games/linux-prefix-hub/Games/Quake/Documents/My Games/Quake")
     target.mkdir(parents=True)
     (target / "save0.sav").write_text("older backup")
 
@@ -331,7 +331,7 @@ def test_the_wish_lands_once_the_game_is_idle_again(fake_prefix,
 
     assert redirect.apply_pending(game) == ["Documents"]
 
-    target = isolated_home / "Games/linux-prefix-hub/Quake/Documents"
+    target = isolated_home / "Games/linux-prefix-hub/Games/Quake/Documents"
     assert (target / "My Games/Quake/save0.sav").read_text() == "progress"
     # Carried out in full, so it is not carried out twice.
     assert not redirect.is_requested(game)
@@ -418,3 +418,86 @@ def test_movable_roots_skips_what_cannot_be_moved():
         {"win_path": "Documents/X", "where": "game_folder"},
     ]}
     assert redirect.movable_roots(entry) == ["Documents", "AppData/Roaming"]
+
+
+# --- Moving a moved folder somewhere else --------------------------------
+def _redirect_into(fingerprint, where):
+    """Redirect and pretend that is where an older version had put it."""
+    from linux_prefix_hub.core import redirect
+    result = redirect.redirect(fingerprint, "Documents", str(where))
+    assert result.ok, result.message
+    return where
+
+
+def test_relocate_moves_the_data_the_link_and_the_registry(game,
+                                                           isolated_home,
+                                                           tmp_path):
+    from linux_prefix_hub.core import db, redirect, registry
+    fingerprint, prefix = game
+    old = _redirect_into(fingerprint, tmp_path / "old/Quake/Documents")
+    new = tmp_path / "new/Quake/Documents"
+
+    result = redirect.relocate(fingerprint, "Documents", str(new))
+    assert result.ok, result.message
+
+    assert (new / "My Games/Quake/save0.sav").read_text() == "progress"
+    assert not old.exists() or not any(old.iterdir())
+    physical = prefix / "drive_c/users/steamuser/Documents"
+    assert physical.is_symlink()
+    assert os.path.realpath(physical) == os.path.realpath(new)
+    assert registry.get_shell_folder(prefix, "Documents") == \
+        registry.windows_path(new)
+    assert db.get_prefix(fingerprint)["storage_locations"][0][
+        "redirect_target"] == str(new)
+
+
+def test_relocate_stops_when_a_file_is_on_both_sides(game, tmp_path):
+    """Same rule as the first move: two copies is a question (rule 9)."""
+    from linux_prefix_hub.core import redirect
+    fingerprint, _prefix = game
+    old = _redirect_into(fingerprint, tmp_path / "old/Quake/Documents")
+    new = tmp_path / "new/Quake/Documents"
+    (new / "My Games/Quake").mkdir(parents=True)
+    (new / "My Games/Quake/save0.sav").write_text("older backup")
+
+    result = redirect.relocate(fingerprint, "Documents", str(new))
+    assert not result.ok
+    assert (old / "My Games/Quake/save0.sav").read_text() == "progress"
+    assert (new / "My Games/Quake/save0.sav").read_text() == "older backup"
+
+
+def test_the_old_default_folder_is_found_and_moved(game, isolated_home):
+    """What an earlier version left in the folder we used to default to."""
+    from linux_prefix_hub.core import paths, redirect
+    fingerprint, _prefix = game
+    old = _redirect_into(fingerprint,
+                         paths.APP_GAMES_DIR / "Quake/Documents")
+
+    waiting = redirect.stale_targets()
+    assert [item["source"] for item in waiting] == [str(old)]
+    assert waiting[0]["target"] == str(
+        paths.DEFAULT_REDIRECT_ROOT / "Quake/Documents")
+
+    assert all(r.ok for r in redirect.move_stale())
+    assert (paths.DEFAULT_REDIRECT_ROOT
+            / "Quake/Documents/My Games/Quake/save0.sav").exists()
+    # The emptied folders below our own go with it, ~/Games never does.
+    assert not old.exists()
+    assert not (paths.APP_GAMES_DIR / "Quake").exists()
+    assert paths.APP_GAMES_DIR.exists()
+    assert redirect.stale_targets() == []
+
+
+def test_a_folder_the_user_named_is_never_moved_for_us(game, tmp_path):
+    """Changing our mind about a default is not a reason to touch it."""
+    from linux_prefix_hub.core import redirect
+    fingerprint, _prefix = game
+    _redirect_into(fingerprint, tmp_path / "ssd/Saves/Quake")
+    assert redirect.stale_targets() == []
+
+
+def test_data_already_in_the_current_folder_is_left_alone(game):
+    from linux_prefix_hub.core import redirect
+    fingerprint, _prefix = game
+    assert redirect.redirect(fingerprint, "Documents").ok
+    assert redirect.stale_targets() == []

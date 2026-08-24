@@ -79,12 +79,24 @@ KNOWN_GAMES = CONFIG_DIR / "known_games.json"  # for new-game detection
 SNAPSHOT_DIR = CONFIG_DIR / "snapshots"        # pending pre-launch snapshots
 PCGW_DIR = CONFIG_DIR / "pcgamingwiki"         # cached answers, one per game
 
+# The app's own corner of ~/Games. One folder with everything this app puts
+# on disk for the user below it, so ~/Games stays theirs -- they very likely
+# already keep game installs there.
+APP_GAMES_DIR = Path.home() / "Games" / APP_NAME
+
 # Where redirected storage locations end up by default: one folder per game
-# below this. Our own subfolder, so ~/Games stays the user's -- they very
-# likely already keep game installs there. Overridable via config
-# ("redirect_root", see db.redirect_root); already-moved folders keep the
-# absolute target stored with them, so changing it never strands data.
-DEFAULT_REDIRECT_ROOT = Path.home() / "Games" / APP_NAME
+# below this. Overridable via config ("redirect_root", see db.redirect_root);
+# already-moved folders keep the absolute target stored with them, so
+# changing it never strands data.
+DEFAULT_REDIRECT_ROOT = APP_GAMES_DIR / "Games"
+
+# Where a game folder the user sets up themselves is made by default: one
+# folder per game below this. A sibling of the redirect root and not the same
+# folder, because the two hold different things -- moved game data there,
+# whole game installs here. Overridable via config ("prefix_root", see
+# newprefix.root); folders that already exist keep their absolute path, so
+# changing it strands nothing.
+DEFAULT_PREFIX_ROOT = APP_GAMES_DIR / "prefix"
 
 
 def installed_appimage_path(install_dir: Path | None = None) -> Path:
