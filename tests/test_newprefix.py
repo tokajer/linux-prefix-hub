@@ -734,3 +734,108 @@ def test_a_folder_on_the_system_wine_cannot_have_a_copy(tmp_path,
     result = newprefix.make_private(folder)
     assert not result.ok
     assert newprefix.private_build(folder) is None
+
+
+# --- what a build asks for, and what else can start it -------------------
+def test_the_runtime_a_build_needs_is_read_and_said(tmp_path, monkeypatch):
+    """The trap: a launcher that always uses one runtime, and a build that
+    asks for another. It fails inside that launcher, as a Python traceback.
+    """
+    from linux_prefix_hub.core import newprefix
+    root = _steam_with_builds(tmp_path, monkeypatch,
+                              builds=("GE-Proton10-34", "GE-Proton11-5"))
+    tools = root / "compatibilitytools.d"
+    write(tools / "GE-Proton10-34/toolmanifest.vdf",
+          '"manifest"\n{\n  "version" "2"\n'
+          '  "require_tool_appid" "1628350"\n}\n')
+    write(tools / "GE-Proton11-5/toolmanifest.vdf",
+          '"manifest"\n{\n  "version" "2"\n'
+          '  "require_tool_appid" "4183110"\n}\n')
+    monkeypatch.setattr(newprefix.shutil, "which", lambda _n: None)
+
+    assert newprefix.required_runtime("GE-Proton11-5")[1] == \
+        "Steam Linux Runtime 4.0"
+    assert "4.0" in newprefix.runtime_warning("GE-Proton11-5")
+    # The one everything uses anyway needs no sentence.
+    assert newprefix.runtime_warning("GE-Proton10-34") == ""
+    assert newprefix.required_runtime("nothing-installed") == ("", "")
+
+
+def test_a_second_folder_can_be_named_and_is_watched(tmp_path, monkeypatch):
+    """A launcher of the game's own keeps the install where it likes."""
+    from linux_prefix_hub.core import db, newprefix
+    folder = _made(tmp_path, monkeypatch, "Camelot")
+    install = tmp_path / "disk/dark-age-of-camelot"
+    install.mkdir(parents=True)
+    launcher = tmp_path / "eden.appimage"
+    write(launcher, "#!/bin/sh\n")
+
+    # Not the folder itself: it holds the prefix, so everything inside would
+    # be reported twice.
+    assert not newprefix.set_watch_dir(folder, folder).ok
+    assert newprefix.set_watch_dir(folder, install).ok
+    assert newprefix.watch_dir(folder) == install
+
+    monkeypatch.setattr(newprefix, "_wait_until_idle", lambda _p: True)
+
+    def writes_into_the_install(_command, _env, _cwd):
+        write(install / "SAVE/slot1.sav", "progress")
+
+    _fake_run(monkeypatch, on_call=writes_into_the_install)
+    assert newprefix.launch(folder, launcher).ok
+    entry = db.get_prefix(db.fingerprint(folder / "pfx"))
+    assert entry["game_dir"] == str(install)
+    assert [loc["where"] for loc in entry["storage_locations"]] == \
+        ["game_folder"]
+
+    assert newprefix.set_watch_dir(folder, None).ok
+    assert newprefix.watch_dir(folder) is None
+
+
+def test_a_menu_entry_starts_the_game_through_us(tmp_path, monkeypatch):
+    """Not through the window: it would stay busy for the whole session."""
+    from linux_prefix_hub.core import newprefix
+    folder = _made(tmp_path, monkeypatch, "Camelot")
+    write(folder / "game.exe", "MZ")
+
+    # Nothing to start yet, so nothing to put in a menu.
+    assert not newprefix.make_shortcut(folder).ok
+    newprefix.set_program(folder, folder / "game.exe")
+
+    result = newprefix.make_shortcut(folder)
+    assert result.ok
+    entry = newprefix.shortcut_file(folder)
+    text = entry.read_text(encoding="utf-8")
+    assert f'--play "{folder}"' in text
+    assert "Name=Camelot" in text
+
+    assert newprefix.drop_shortcut(folder).ok
+    assert not entry.exists()
+
+
+def test_deleting_the_folder_takes_its_menu_entry_with_it(tmp_path,
+                                                          monkeypatch):
+    from linux_prefix_hub.core import newprefix
+    folder = _made(tmp_path, monkeypatch, "Camelot")
+    write(folder / "game.exe", "MZ")
+    newprefix.set_program(folder, folder / "game.exe")
+    assert newprefix.make_shortcut(folder).ok
+    entry = newprefix.shortcut_file(folder)
+
+    assert newprefix.delete(folder).ok
+    assert not entry.exists()
+
+
+def test_rebuilding_covers_a_folders_own_version(tmp_path, monkeypatch):
+    """It is the copy that ages, and nothing else was refreshing it."""
+    from linux_prefix_hub.core import gameopts, newprefix
+    folder, root = _with_a_build(tmp_path, monkeypatch)
+    assert newprefix.make_private(folder).ok
+    copy = newprefix.private_build(folder)
+    write(copy / "left-over-from-the-old-one", "x")
+
+    results = gameopts.rebuild_all()
+    assert results and all(r.ok for r in results)
+    again = newprefix.private_build(folder)
+    assert again is not None and again.name == copy.name
+    assert not (again / "left-over-from-the-old-one").exists()

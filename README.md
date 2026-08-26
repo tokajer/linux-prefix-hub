@@ -68,7 +68,10 @@ linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/Game
   the launch itself is what learns where the game saves. A game with its own
   launcher counts too — the diff waits until nothing is running in the folder
   any more, and that launcher may be a Linux program (an AppImage, say) that
-  runs the game through a compatibility build of its own. The name in the list and the short name of the folder are two
+  runs the game through a compatibility build of its own. Put the folder in
+  your application menu and starting it from the desktop is watched the same
+  way, without keeping the window busy; name the folder the game is actually
+  installed in and that gets watched as well. The name in the list and the short name of the folder are two
   fields, and the Windows version can be changed afterwards. Deleting one again is one
   button: the folder and the game in it go, what you moved into your home
   folder stays, and folders this app did not make are never touched.
@@ -368,6 +371,9 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --set-engine FOLDER            which Windows version it uses (with --engine)
   --own-version FOLDER           give it a copy of that version, for it alone
   --shared-version FOLDER        take that copy away again
+  --watch-folder F [--target P]  also watch where the game itself is installed
+  --shortcut FOLDER              put it in your application menu
+  --remove-shortcut FOLDER       take that entry away again
   --set-game-root PATH           where new game folders are made from now on
   --run-in FOLDER --program P    install a program into one of those folders
   --run-in FOLDER               …without --program: its Windows settings

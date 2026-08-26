@@ -161,6 +161,8 @@ class GameRow(Adw.ExpanderRow):
             self.add_row(WindowsRow(self._window, own))
             self.add_row(EngineRow(self._window, own))
             self.add_row(PrivateBuildRow(self._window, own))
+            self.add_row(WatchRow(self._window, own))
+            self.add_row(ShortcutRow(self._window, own))
         elif folder:
             self.add_row(GameFolderRow(self._window, str(folder)))
         else:
@@ -577,6 +579,24 @@ class EngineRow(Adw.ActionRow):
                                  if current in self._ids else 0)
         self._combo.connect("notify::selected", self._on_pick)
         self.add_suffix(self._combo)
+        self._say_runtime(current)
+
+    def _say_runtime(self, engine: str) -> None:
+        """Which runtime this build needs, when that can bite.
+
+        It is what a launcher of the game's own gets wrong: one that always
+        wraps the build in the same runtime cannot start a build that asks
+        for a newer one, and the failure lands in that launcher's log as a
+        Python traceback.
+        """
+        _appid, runtime = newprefix.required_runtime(engine)
+        warning = newprefix.runtime_warning(engine)
+        if warning:
+            self.set_subtitle(esc(warning))
+        elif runtime:
+            self.set_subtitle(esc(_("Needs {runtime}", runtime=runtime)))
+        else:
+            self.set_subtitle("")
 
     def _on_pick(self, *_a: Any) -> None:
         index = int(self._combo.get_selected())
@@ -587,6 +607,100 @@ class EngineRow(Adw.ActionRow):
             return
         result = newprefix.set_engine(self._dir, wanted)
         self._window.toast(result.message)
+        self._say_runtime(wanted)
+
+
+class WatchRow(Adw.ActionRow):
+    """A second folder that belongs to the same game.
+
+    The game does not always live where its Windows part does -- a launcher
+    of the game's own keeps the install wherever it likes, and games write
+    saves next to themselves often enough that not looking there is how "it
+    never notices anything" happens. Nobody can guess that folder.
+    """
+
+    def __init__(self, window: MainWindow, directory: Path) -> None:
+        super().__init__()
+        self._window = window
+        self._dir = directory
+        self.set_title(esc(_("Also watch the game's own folder")))
+        self.set_activatable(False)
+        self._sync()
+
+        clear = Gtk.Button(icon_name="edit-clear-symbolic",
+                           valign=Gtk.Align.CENTER)
+        clear.add_css_class("flat")
+        clear.set_tooltip_text(_("Stop watching it"))
+        clear.connect("clicked", self._on_clear)
+        self.add_suffix(clear)
+
+        choose = Gtk.Button(label=_("Choose..."), valign=Gtk.Align.CENTER)
+        choose.connect("clicked", self._on_choose)
+        self.add_suffix(choose)
+
+    def _sync(self) -> None:
+        named = newprefix.watch_dir(self._dir)
+        self.set_subtitle(esc(
+            str(named) if named is not None
+            else _("Where the game itself is installed, if that is somewhere "
+                   "else.")))
+
+    def _apply(self, path: str | None) -> None:
+        result = newprefix.set_watch_dir(self._dir, path)
+        self._window.toast(result.message)
+        self._sync()
+
+    def _on_clear(self, *_a: Any) -> None:
+        self._apply(None)
+
+    def _on_choose(self, *_a: Any) -> None:
+        if not hasattr(Gtk, "FileDialog"):             # GTK < 4.10
+            self._window.toast(_("Set it with: {cmd}",
+                                 cmd=f"{paths.APP_NAME} --watch-folder "
+                                     f"{self._dir} --target PATH"))
+            return
+        start = newprefix.watch_dir(self._dir) or self._dir
+        choose_folder(self._window, _("Choose the folder the game is "
+                                      "installed in"), start, self._apply)
+
+
+class ShortcutRow(Adw.ActionRow):
+    """Start the game without going through this window.
+
+    Starting from here keeps the window busy for the whole session and loses
+    what was learned if it is closed. The entry runs `--play`, so a game
+    started from the desktop is watched exactly the same way.
+    """
+
+    def __init__(self, window: MainWindow, directory: Path) -> None:
+        super().__init__()
+        self._window = window
+        self._dir = directory
+        self._syncing = False
+        self.set_title(esc(_("In your application menu")))
+        self.set_subtitle(esc(_("Starts the game from your desktop, and "
+                                "still picks up what it stores.")))
+        self.set_activatable(False)
+
+        self._switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._sync_switch(newprefix.shortcut_file(directory).exists())
+        self._switch.connect("state-set", self._on_toggled)
+        self.add_suffix(self._switch)
+
+    def _sync_switch(self, active: bool) -> None:
+        self._syncing = True
+        self._switch.set_active(active)
+        self._switch.set_state(active)
+        self._syncing = False
+
+    def _on_toggled(self, _switch: Gtk.Switch, wanted: bool) -> bool:
+        if self._syncing:
+            return False
+        result = (newprefix.make_shortcut(self._dir) if wanted
+                  else newprefix.drop_shortcut(self._dir))
+        self._window.toast(result.message)
+        self._sync_switch(wanted if result.ok else not wanted)
+        return True
 
 
 class PrivateBuildRow(Adw.ActionRow):
@@ -1318,6 +1432,8 @@ class OptionsDialog:
         self._source = str(game.get("source"))
         self._app_id = str(game.get("app_id"))
         self._profile = gameopts.read(self._source, self._app_id)
+        self._own = gameopts.own_folder(game)
+        self._folder = newprefix.owned(game.get("prefix_path"))
 
         self._dialog = (Adw.PreferencesDialog()
                         if hasattr(Adw, "PreferencesDialog")
@@ -1326,14 +1442,13 @@ class OptionsDialog:
         # Built in this order because `_store` reads the text box, and the
         # switches above it can be flicked as soon as the page is up.
         self._custom = self._custom_group()
-        if self._source == "custom":
+        if self._source == "custom" or self._own:
             page.add(self._name_group())
         page.add(self._switch_group())
         page.add(self._custom)
         # Which build to copy is a question only the copy has. A folder this
         # app made has its own Windows version in its own row, and copying
         # anything for it would be a second answer to the same question.
-        self._own = gameopts.own_folder(game)
         if not self._own:
             page.add(self._version_group())
         page.add(self._apply_group())
@@ -1373,15 +1488,22 @@ class OptionsDialog:
                           "it is called here."))
         directory = gameopts.find_instance(self._source, self._app_id)
         self._name = Adw.EntryRow(title=esc(_("Name")))
-        self._name.set_text(str(self._profile.get("title") or self._app_id))
+        self._name.set_text(
+            str(newprefix.display_name(self._game.get("prefix_path")))
+            if self._folder is not None
+            else str(self._profile.get("title") or self._app_id))
         self._name.connect("apply", self._on_rename)
         self._name.set_show_apply_button(True)
         group.add(self._name)
 
-        short = Adw.ActionRow(
-            title=esc(_("Short name")),
-            subtitle=esc(directory.name if directory is not None
-                         else f"{gameopts.PREFIX}-{self._app_id}"))
+        if self._folder is not None:
+            short_name = self._folder.name
+        elif directory is not None:
+            short_name = directory.name
+        else:
+            short_name = f"{gameopts.PREFIX}-{self._app_id}"
+        short = Adw.ActionRow(title=esc(_("Short name")),
+                              subtitle=esc(short_name))
         if hasattr(short, "set_subtitle_selectable"):
             short.set_subtitle_selectable(True)
         short.set_activatable(False)
@@ -1390,10 +1512,14 @@ class OptionsDialog:
 
     def _on_rename(self, entry: Adw.EntryRow) -> None:
         from ..core import gameopts
-        result = gameopts.rename(self._source, self._app_id,
-                                 entry.get_text())
-        if result.ok:
-            self._profile["title"] = str(result["title"])
+        if self._folder is not None:
+            # Ours keeps its name in its own marker, where the scan reads it.
+            result = newprefix.rename(self._folder, entry.get_text())
+        else:
+            result = gameopts.rename(self._source, self._app_id,
+                                     entry.get_text())
+            if result.ok:
+                self._profile["title"] = str(result["title"])
         self._window.toast(result.message)
         self._row.refresh()
         self._window.reload()

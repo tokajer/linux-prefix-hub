@@ -842,6 +842,33 @@ starts the game with it from then on. `set_engine()` rebuilds it — a version
 stored next to a copy of the old one is not a version change — and `delete()`
 takes it with the folder.
 
+### Which runtime a build asks for
+
+`required_runtime()` reads `require_tool_appid` out of the build's own
+`toolmanifest.vdf` (line by line, rule 2 — it is the build author's file and we
+want one value). Steam reads that key and starts the build inside the runtime
+it names; a launcher of the game's own may wrap every build in the same one,
+and a build that wants a newer runtime then dies with a Python `ImportError`
+that reads like a broken install. `runtime_warning()` says so in advance, and
+only for the builds where it can bite — a build asking for the runtime
+everything uses anyway needs no sentence.
+
+### A second folder, and a way in that is not this window
+
+`watch_dir()` / `set_watch_dir()` name the folder the game is *installed* in
+when that is somewhere else entirely — a launcher of the game's own keeps it
+wherever it likes, and games write saves next to themselves often enough that
+not looking there is how "it never notices anything" happens. It becomes the
+`game_dir` of the launch context, which is the second space `wrapper._after`
+already diffs. The folder we made is refused: it holds the prefix.
+
+`make_shortcut()` writes a `.desktop` entry that runs `--play <folder>`. Two
+things at once: starting from the window keeps that window busy for the whole
+session and loses the diff if it is closed, and a game people actually play
+gets started from their desktop. `delete()` takes the entry with the folder,
+and the entry's name comes from the marker, so it is removed before the folder
+is.
+
 ### The folder name has to contain a number
 
 `_numbered()`. A compatibility build's `protonfixes` works out which game it is

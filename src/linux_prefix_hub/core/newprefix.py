@@ -228,6 +228,67 @@ def find_engine(name: str) -> dict[str, str] | None:
     return known.get(gameopts.detect_base(gameopts.family(name)))
 
 
+# --- which runtime a build asks for --------------------------------------
+# A compatibility build says in its own manifest which Steam Linux Runtime it
+# needs. Steam reads that and starts the build inside it; a launcher of the
+# game's own may not, and a build that wants a newer runtime than the one it
+# is put in dies with a Python traceback that reads like a broken install.
+# So we can at least say which one a build asks for.
+TOOL_MANIFEST = "toolmanifest.vdf"
+
+RUNTIMES = {
+    "1070560": "Steam Linux Runtime 1.0 (scout)",
+    "1391110": "Steam Linux Runtime 2.0 (soldier)",
+    "1628350": "Steam Linux Runtime 3.0 (sniper)",
+    "4183110": "Steam Linux Runtime 4.0",
+}
+
+# What launchers that hardcode one runtime hardcode. Naming it is the whole
+# point of the warning: "needs 4.0" alone does not tell anybody why their
+# game stopped starting.
+COMMON_RUNTIME = "1628350"
+
+
+def required_runtime(engine: str) -> tuple[str, str]:
+    """(app id, name) of the runtime this build asks for. ("", "") if none.
+
+    Read line by line rather than through `core/vdf.py`: this is the build
+    author's file and we only want one value out of it.
+    """
+    found = find_engine(str(engine))
+    if found is None or found["kind"] != "proton":
+        return ("", "")
+    try:
+        text = (Path(found["path"]) / TOOL_MANIFEST).read_text(
+            encoding="utf-8", errors="ignore")
+    except OSError:
+        return ("", "")
+    for line in text.splitlines():
+        if "require_tool_appid" not in line:
+            continue
+        parts = [p for p in line.split('"') if p.strip()]
+        if len(parts) >= 2:
+            app_id = parts[-1].strip()
+            return (app_id, RUNTIMES.get(app_id, app_id))
+    return ("", "")
+
+
+def runtime_warning(engine: str) -> str:
+    """What to say when a build needs a runtime a launcher may not give it.
+
+    Only for the builds where it can bite: one that asks for the runtime
+    everything uses anyway needs no sentence.
+    """
+    app_id, name = required_runtime(engine)
+    if not app_id or app_id == COMMON_RUNTIME:
+        return ""
+    return _("{engine} asks for {runtime}. A launcher of the game's own that "
+             "always uses {common} cannot start it -- the failure looks like "
+             "a broken Proton in that launcher's log.",
+             engine=engine, runtime=name,
+             common=RUNTIMES[COMMON_RUNTIME])
+
+
 # --- the marker ----------------------------------------------------------
 def read_marker(directory: str | Path) -> dict[str, str]:
     """What we wrote about this folder. Empty means it is not ours."""
@@ -377,11 +438,13 @@ def make_private(directory: str | Path) -> PrefixResult:
     profile["built_version"] = str(result["version"])
     gameopts.write(source, app_id, profile)
     copy = private_build(folder)
-    return PrefixResult(True,
-                        _("{name} now has a version of its own. Point your "
-                          "own launcher at {path} to use it there too.",
-                          name=str(game["game_name"]), path=str(copy)),
-                        path=str(copy), name=str(result["name"]))
+    message = _("{name} now has a version of its own. Point your own "
+                "launcher at {path} to use it there too.",
+                name=str(game["game_name"]), path=str(copy))
+    warning = runtime_warning(str(engine["id"]))
+    return PrefixResult(True, message + (" " + warning if warning else ""),
+                        path=str(copy), name=str(result["name"]),
+                        warning=warning)
 
 
 def drop_private(directory: str | Path) -> PrefixResult:
@@ -421,14 +484,57 @@ def set_engine(directory: str | Path, engine: str) -> PrefixResult:
         return PrefixResult(False, _("{name} is not installed here.",
                                      name=wanted))
     _write_marker(folder, {**marker, "engine": wanted})
+    warning = runtime_warning(wanted)
     if private_build(folder) is not None:
         # The copy is the thing that actually starts the game, so a version
         # stored next to a copy of the old one is not a version change.
         again = make_private(folder)
         if not again.ok:
             return again
-    return PrefixResult(True, _("Now using {engine}.",
-                                engine=engine_label(wanted)), engine=wanted)
+    message = _("Now using {engine}.", engine=engine_label(wanted))
+    return PrefixResult(True, message + (" " + warning if warning else ""),
+                        engine=wanted, warning=warning)
+
+
+def watch_dir(directory: str | Path) -> Path | None:
+    """A folder outside this one that belongs to the same game, if named.
+
+    The game does not always live where we put its Windows part. A launcher
+    of the game's own keeps the install wherever it likes -- another disk,
+    usually -- and games write saves next to themselves often enough that
+    not looking there is how "it never notices anything" happens. Nobody can
+    guess that directory, so the user names it.
+    """
+    stored = read_marker(directory).get("watch", "")
+    return Path(stored) if stored else None
+
+
+def set_watch_dir(directory: str | Path,
+                  path: str | Path | None) -> PrefixResult:
+    """Name that folder, or take it back with `None`."""
+    folder = Path(directory)
+    marker = read_marker(folder)
+    if not marker:
+        return PrefixResult(False, _("{path} was not made by this app.",
+                                     path=str(folder)))
+    if not path:
+        _write_marker(folder, {**marker, "watch": ""})
+        return PrefixResult(True, _("No second folder is watched any more."))
+
+    wanted = Path(os.path.abspath(os.path.expanduser(str(path))))
+    if not wanted.is_dir():
+        return PrefixResult(False, _("{path} is not a folder.",
+                                     path=str(wanted)))
+    prefix = folder / PREFIX_DIR
+    if wanted == folder or wanted in prefix.parents or prefix == wanted:
+        # It holds the prefix, so every change inside would be reported a
+        # second time as a change in the game's own folder.
+        return PrefixResult(False,
+                            _("That is this game folder itself. Name the "
+                              "folder the game is installed in instead."))
+    _write_marker(folder, {**marker, "watch": str(wanted)})
+    return PrefixResult(True, _("{path} is watched as well now.",
+                                path=str(wanted)), path=str(wanted))
 
 
 def program_of(directory: str | Path) -> Path | None:
@@ -695,6 +801,75 @@ def run(directory: str | Path, argv: list[str], engine: str = "",
     return PrefixResult(True, _("Done."), code=0)
 
 
+# --- a way to start it that is not this app ------------------------------
+def shortcut_file(directory: str | Path) -> Path:
+    """Where the menu entry for this folder lives."""
+    from . import integrate
+    marker = read_marker(directory)
+    alias = marker.get("alias") or Path(directory).name
+    return integrate.APPLICATIONS_DIR / f"{paths.APP_NAME}-{alias}.desktop"
+
+
+def make_shortcut(directory: str | Path) -> PrefixResult:
+    """A menu entry that starts this game -- through the same observation.
+
+    Two things it fixes at once. Starting from our window keeps that window
+    busy for the whole session and loses the diff if it is closed; and a game
+    people actually play gets started from their desktop, not from a settings
+    app. The entry runs `--play`, so what it starts is still watched.
+    """
+    folder = Path(directory)
+    marker = read_marker(folder)
+    if not marker:
+        return PrefixResult(False, _("{path} was not made by this app.",
+                                     path=str(folder)))
+    if program_of(folder) is None:
+        return PrefixResult(False, _("No game chosen yet."))
+
+    entry = shortcut_file(folder)
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    name = marker.get("name") or folder.name
+    entry.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={name}\n"
+        f"Comment={_('Started by {app}', app=paths.APP_TITLE)}\n"
+        f"Exec={_exec_line()} --play \"{folder}\"\n"
+        f"Icon={paths.APP_ID}\n"
+        "Categories=Game;\n"
+        "Terminal=false\n", encoding="utf-8")
+    return PrefixResult(True, _("{name} is in your application menu now.",
+                                name=name), path=str(entry))
+
+
+def drop_shortcut(directory: str | Path) -> PrefixResult:
+    entry = shortcut_file(directory)
+    if not entry.exists():
+        return PrefixResult(True, _("There is no menu entry for it."))
+    try:
+        entry.unlink()
+    except OSError as exc:
+        return PrefixResult(False, _("Could not remove {path}: {error}",
+                                     path=str(entry), error=str(exc)))
+    return PrefixResult(True, _("The menu entry is gone."))
+
+
+def _exec_line() -> str:
+    """What the entry has to run. The installed app, not this process.
+
+    A checkout has no AppImage, so it falls back to the interpreter that is
+    running now -- which is exactly what `integrate.install_desktop_entry`
+    does for the app's own entry.
+    """
+    import sys
+
+    from . import integrate
+    appimage = integrate._target_appimage()
+    if appimage.exists():
+        return f'"{appimage}"'
+    return f'"{sys.executable}" -m {paths.PACKAGE}'
+
+
 # --- taking one away again ----------------------------------------------
 def moved_out(prefix_path: str | Path) -> list[str]:
     """Folders of this game's data that live outside it, and would survive.
@@ -741,6 +916,7 @@ def delete(directory: str | Path) -> PrefixResult:
 
     kept = moved_out(prefix)
     fingerprint = db.fingerprint(prefix)
+    drop_shortcut(folder)               # its name comes from the marker
     try:
         shutil.rmtree(folder)
     except OSError as exc:
@@ -845,6 +1021,12 @@ def launch(directory: str | Path,
     if not is_native([str(chosen)]) and prefix not in chosen.parents \
             and prefix.parent != beside:
         context["game_dir"] = str(beside)
+    # A folder the user named wins over anything derived from the program:
+    # they know where the game is, and with a launcher of the game's own it
+    # is the only way we can be told at all.
+    named = watch_dir(folder)
+    if named is not None:
+        context["game_dir"] = str(named)
 
     # What the user asked this game to run with. No container in the way
     # here, so the profile is simply the environment of the process we start

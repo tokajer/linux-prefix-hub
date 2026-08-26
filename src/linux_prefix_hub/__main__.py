@@ -391,11 +391,18 @@ def _cmd_options(needle: str, source: str | None,
     src, app_id = str(game["source"]), str(game["app_id"])
 
     if name:
-        result = gameopts.rename(src, app_id, name)
+        from .core import newprefix
+        folder = newprefix.owned(game.get("prefix_path"))
+        # A folder we made keeps its name in its own marker, where the scan
+        # reads it -- the profile's title is for an environment with no
+        # folder behind it.
+        result = (newprefix.rename(folder, name) if folder is not None
+                  else gameopts.rename(src, app_id, name))
         print(result.message)
         if not result.ok:
             return 1
-        game["game_name"] = str(result["title"])
+        game["game_name"] = str(result.get("title") or result.get("name")
+                                or name)
     profile = gameopts.read(src, app_id)
 
     print(f"{game['game_name']} ({src}/{app_id})")
@@ -634,6 +641,36 @@ def _cmd_play(needle: str, program: str | None) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_watch_folder(needle: str, target: str | None) -> int:
+    """A second folder that belongs to the same game."""
+    from .core import newprefix
+    directory = _own_folder(needle)
+    if directory is None:
+        return 1
+    if target is None:
+        named = newprefix.watch_dir(directory)
+        print(_("Also watched: {path}", path=str(named)) if named
+              else _("No second folder is watched."))
+        print(_("Name one with: {cmd}",
+                cmd=f"{_app_name()} --watch-folder {needle} --target PATH"))
+        return 0
+    result = newprefix.set_watch_dir(directory, target or None)
+    print(result.message)
+    return 0 if result.ok else 1
+
+
+def _cmd_shortcut(needle: str, undo: bool) -> int:
+    """A menu entry that starts the game -- and still lets us watch it."""
+    from .core import newprefix
+    directory = _own_folder(needle)
+    if directory is None:
+        return 1
+    result = (newprefix.drop_shortcut(directory) if undo
+              else newprefix.make_shortcut(directory))
+    print(result.message)
+    return 0 if result.ok else 1
+
+
 def _cmd_own_version(needle: str, undo: bool) -> int:
     """A compatibility build that belongs to one folder alone."""
     from .core import newprefix
@@ -657,7 +694,10 @@ def _cmd_set_engine(needle: str, engine: str | None) -> int:
         current = newprefix.engine_of(directory)
         print(_("Windows version: {name}",
                 name=newprefix.engine_label(current) or "?"))
-        _print_engines(available)
+        warning = newprefix.runtime_warning(current)
+        if warning:
+            print("  " + warning)
+        _print_engines_with_runtime(available)
         print(_("Choose one with: {cmd}",
                 cmd=f"{_app_name()} --set-engine {directory} --engine NAME"))
         return 0
@@ -666,6 +706,16 @@ def _cmd_set_engine(needle: str, engine: str | None) -> int:
     if not result.ok:
         _print_engines(available)
     return 0 if result.ok else 1
+
+
+def _print_engines_with_runtime(available: list[dict[str, str]]) -> None:
+    from .core import newprefix
+    print(_("Available:"))
+    for engine in available:
+        _appid, runtime = newprefix.required_runtime(str(engine["id"]))
+        label = newprefix.engine_label(str(engine["id"]))
+        print(f"  {engine['id']:<24} {label}"
+              + (f"  [{runtime}]" if runtime else ""))
 
 
 def _own_folder(needle: str) -> str | None:
@@ -1182,6 +1232,14 @@ def _build_parser() -> Any:
     g.add_argument("--set-engine", metavar="FOLDER", dest="set_engine",
                    help=_("which Windows version one of those folders uses "
                           "(with --engine; without it, what is available)"))
+    g.add_argument("--watch-folder", metavar="FOLDER", dest="watch_folder",
+                   help=_("also watch the folder the game is installed in "
+                          "(with --target; empty --target forgets it)"))
+    g.add_argument("--shortcut", metavar="FOLDER",
+                   help=_("put a game folder in your application menu"))
+    g.add_argument("--remove-shortcut", metavar="FOLDER",
+                   dest="remove_shortcut",
+                   help=_("take that menu entry away again"))
     g.add_argument("--own-version", metavar="FOLDER", dest="own_version",
                    help=_("give a folder its own copy of the Windows version "
                           "-- your own launcher can use it too"))
@@ -1250,7 +1308,8 @@ def main() -> int:
                       "rebuild_options", "new_options", "list_options",
                       "import_options", "new_game_folder", "run_in",
                       "delete_game_folder", "play", "set_engine",
-                      "own_version", "shared_version", "move_old_data",
+                      "own_version", "shared_version", "watch_folder",
+                      "shortcut", "remove_shortcut", "move_old_data",
                       "integrate", "uninstall")
 
     if parsed.set_language:
@@ -1339,6 +1398,12 @@ def main() -> int:
         return _cmd_play(parsed.play, parsed.program)
     if parsed.set_engine:
         return _cmd_set_engine(parsed.set_engine, parsed.engine)
+    if parsed.watch_folder:
+        return _cmd_watch_folder(parsed.watch_folder, parsed.target)
+    if parsed.shortcut:
+        return _cmd_shortcut(parsed.shortcut, undo=False)
+    if parsed.remove_shortcut:
+        return _cmd_shortcut(parsed.remove_shortcut, undo=True)
     if parsed.own_version:
         return _cmd_own_version(parsed.own_version, undo=False)
     if parsed.shared_version:

@@ -918,6 +918,17 @@ def rebuild_all() -> list[OptionsResult]:
             continue
         results.append(_rebuild_one(game))
 
+    # Folders this app made, but only the ones that have a copy: a folder
+    # whose options are simply its environment has nothing to rebuild, and
+    # the copy is the thing that ages (`newprefix.make_private`).
+    from . import newprefix
+    for game in adapters.get_adapter("generic").iter_games():
+        folder = newprefix.owned(game.get("prefix_path"))
+        if folder is None or newprefix.private_build(folder) is None:
+            continue
+        outcome = newprefix.make_private(folder)
+        results.append(OptionsResult(outcome.ok, outcome.message))
+
     wanted = dict.fromkeys(app_id for source, app_id in enabled
                            if source == "steam")
     for game in adapters.get_adapter("steam").iter_games():
