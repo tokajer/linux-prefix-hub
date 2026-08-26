@@ -20,7 +20,7 @@ Matches the AppImage concept: ONE artifact, several modes.
   --open GAME        show its data folder in the file manager
   --hide GAME        leave it out of the lists (--unhide puts it back)
   --options GAME     extra options for one game (--options-on/-off/-edit)
-  --new-options NAME an environment of your own, belonging to no game
+  --new-game-folder  set up a game folder of your own (--play starts it)
   --uninstall        move all game data back, then remove the app
 
 The three shim modes are dispatched before argparse and with lazy imports, so
@@ -361,19 +361,14 @@ def _cmd_redirect(needle: str, target: str | None, undo: bool) -> int:
 
 # --- extra options -------------------------------------------------------
 def _pick_target(needle: str, source: str | None) -> dict | None:
-    """A game, or one of the user's own environments.
+    """A game, by anything the user has in front of them.
 
-    Theirs are checked first and by id: they are few, they are named by the
-    user, and a name they chose should not be beaten by a partial match in a
-    library of four hundred games.
+    A game folder this app made is checked first and by its short name: it
+    is what the folder is called and therefore what people type, and it
+    should not be beaten by a partial match in a library of four hundred
+    games.
     """
-    from .core import gameopts, newprefix
-    wanted = gameopts.slug(needle)
-    for game in gameopts.custom_environments():
-        if str(game["app_id"]) == wanted:
-            return game
-    # A folder this app made answers to its short name too, which is what
-    # the folder is called and therefore what people type.
+    from .core import newprefix
     folder = newprefix.find(needle)
     if folder is not None:
         return newprefix.as_game(folder)
@@ -392,17 +387,20 @@ def _cmd_options(needle: str, source: str | None,
 
     if name:
         from .core import newprefix
+        # Only a folder this app made has a name of its own to change: it
+        # keeps it in its own marker, where the scan reads it. Every other
+        # game is called what its launcher calls it, and renaming it here
+        # would be a name only we can see.
         folder = newprefix.owned(game.get("prefix_path"))
-        # A folder we made keeps its name in its own marker, where the scan
-        # reads it -- the profile's title is for an environment with no
-        # folder behind it.
-        result = (newprefix.rename(folder, name) if folder is not None
-                  else gameopts.rename(src, app_id, name))
+        if folder is None:
+            print(_("{name} is named by the launcher it belongs to.",
+                    name=str(game.get("game_name"))))
+            return 1
+        result = newprefix.rename(folder, name)
         print(result.message)
         if not result.ok:
             return 1
-        game["game_name"] = str(result.get("title") or result.get("name")
-                                or name)
+        game["game_name"] = str(result.get("name") or name)
     profile = gameopts.read(src, app_id)
 
     print(f"{game['game_name']} ({src}/{app_id})")
@@ -487,68 +485,6 @@ def _cmd_options_edit(needle: str, source: str | None) -> int:
 _CUSTOM_TEMPLATE = (
     "# One NAME=value per line. Lines starting with # are ignored.\n"
     "# These are handed to the game exactly as written.\n")
-
-
-def _cmd_new_options(name: str) -> int:
-    """An environment of your own: a name, and nothing behind it.
-
-    No game, no launcher -- so nothing is pointed at it either. It shows up
-    in Steam's compatibility list and the user picks it wherever they want.
-    """
-    from .core import gameopts
-    if not gameopts.slug(name):
-        print(_("That name cannot be used."))
-        return 1
-    game = gameopts.as_game(name)
-    result = gameopts.turn_on(game)
-    print(result.message)
-    if result.ok:
-        print(_("Add your own settings with: {cmd}",
-                cmd=f"{_app_name()} --options-edit {game['app_id']}"))
-    return 0 if result.ok else 1
-
-
-def _cmd_list_options() -> int:
-    from .core import gameopts
-    own = gameopts.custom_environments()
-    waiting = gameopts.importable()
-    if own:
-        for game in own:
-            profile = gameopts.read(game["source"], str(game["app_id"]))
-            state = _("on") if profile["enabled"] else _("off")
-            built = gameopts.find_instance(game["source"],
-                                           str(game["app_id"]))
-            short = built.name if built is not None else str(game["app_id"])
-            print(f"  {str(game['game_name'])[:28]:<28} [{state}]  {short}")
-    else:
-        print(_("You have no environments of your own yet."))
-        print(_("Make one with: {cmd}",
-                cmd=f"{_app_name()} --new-options NAME"))
-    if waiting:
-        print()
-        print(_("{n} profile(s) from the proton-instance script can be taken "
-                "over: {cmd}", n=len(waiting),
-                cmd=f"{_app_name()} --import-options"))
-    return 0
-
-
-def _cmd_import_options(assume_yes: bool) -> int:
-    """Take the shell script's profiles over. Its own folders stay put."""
-    from .core import gameopts
-    waiting = gameopts.importable()
-    if not waiting:
-        print(_("Nothing to take over."))
-        return 0
-    for entry in waiting:
-        print(f"  {entry['name']}  ({entry['base']})")
-    if not assume_yes and not _ask(_("Take these over? [y/N] ")):
-        print(_("Nothing was changed."))
-        return 0
-    for entry in waiting:
-        print(gameopts.import_legacy(entry).message)
-    print(_("Their own folders were left alone. Turn one on with: {cmd}",
-            cmd=f"{_app_name()} --options-on NAME"))
-    return 0
 
 
 def _cmd_rebuild_options() -> int:
@@ -671,37 +607,60 @@ def _cmd_shortcut(needle: str, undo: bool) -> int:
     return 0 if result.ok else 1
 
 
-def _cmd_own_version(needle: str, undo: bool) -> int:
-    """A compatibility build that belongs to one folder alone."""
+def _any_game_folder(needle: str) -> dict | None:
+    """A game with a folder we can give a Windows version of its own.
+
+    Any game folder, not only the ones this app made -- Steam excepted,
+    because Steam is pointed at such a build itself (`--options-on`) and a
+    second way of doing that would be a second answer to one question.
+    """
     from .core import newprefix
-    directory = _own_folder(needle)
-    if directory is None:
+    game = _pick_target(needle, None)
+    if not game:
+        return None
+    if str(game.get("source")) == "steam":
+        print(_("Steam games use their extra options for this: {cmd}",
+                cmd=f"{_app_name()} --options-on {game['app_id']}"))
+        return None
+    if not newprefix.foreign(game):
+        print(_("{name} has no game folder yet. Start it once, then try "
+                "again.", name=str(game.get("game_name"))))
+        return None
+    return game
+
+
+def _cmd_own_version(needle: str, undo: bool) -> int:
+    """A compatibility build that belongs to one game folder alone."""
+    from .core import newprefix
+    game = _any_game_folder(needle)
+    if game is None:
         return 1
-    result = (newprefix.drop_private(directory) if undo
-              else newprefix.make_private(directory))
+    result = (newprefix.drop_private_for(game) if undo
+              else newprefix.make_private_for(game))
     print(result.message)
     return 0 if result.ok else 1
 
 
 def _cmd_set_engine(needle: str, engine: str | None) -> int:
-    """Which Windows version one of our folders uses from now on."""
+    """Which Windows version one game folder uses from now on."""
     from .core import newprefix
-    directory = _own_folder(needle)
-    if directory is None:
+    game = _any_game_folder(needle)
+    if game is None:
         return 1
     available = newprefix.engines()
     if not engine:
-        current = newprefix.engine_of(directory)
+        current = newprefix.engine_for(game)
         print(_("Windows version: {name}",
-                name=newprefix.engine_label(current) or "?"))
+                name=newprefix.engine_label(current) if current
+                else _("the installed one")))
         warning = newprefix.runtime_warning(current)
         if warning:
             print("  " + warning)
         _print_engines_with_runtime(available)
         print(_("Choose one with: {cmd}",
-                cmd=f"{_app_name()} --set-engine {directory} --engine NAME"))
+                cmd=f"{_app_name()} --set-engine {needle} --engine NAME"))
         return 0
-    result = newprefix.set_engine(directory, engine)
+    result = newprefix.set_engine_for(game, engine)
     print(result.message)
     if not result.ok:
         _print_engines(available)
@@ -1212,14 +1171,6 @@ def _build_parser() -> Any:
     g.add_argument("--rebuild-options", action="store_true",
                    dest="rebuild_options",
                    help=_("refresh every game that uses extra options"))
-    g.add_argument("--new-options", metavar="NAME", dest="new_options",
-                   help=_("make an environment of your own, without a game"))
-    g.add_argument("--list-options", action="store_true", dest="list_options",
-                   help=_("list your own environments"))
-    g.add_argument("--import-options", action="store_true",
-                   dest="import_options",
-                   help=_("take over profiles from the proton-instance "
-                          "script"))
     g.add_argument("--new-game-folder", metavar="NAME",
                    dest="new_game_folder",
                    help=_("set up a new game folder of your own"))
@@ -1305,8 +1256,7 @@ def main() -> int:
     other_commands = ("scan", "status", "connect", "disconnect", "lookup",
                       "redirect", "undo_redirect", "open", "hide", "unhide",
                       "options", "options_on", "options_off", "options_edit",
-                      "rebuild_options", "new_options", "list_options",
-                      "import_options", "new_game_folder", "run_in",
+                      "rebuild_options", "new_game_folder", "run_in",
                       "delete_game_folder", "play", "set_engine",
                       "own_version", "shared_version", "watch_folder",
                       "shortcut", "remove_shortcut", "move_old_data",
@@ -1383,12 +1333,6 @@ def main() -> int:
         return _cmd_options_edit(parsed.options_edit, parsed.source)
     if parsed.rebuild_options:
         return _cmd_rebuild_options()
-    if parsed.new_options:
-        return _cmd_new_options(parsed.new_options)
-    if parsed.list_options:
-        return _cmd_list_options()
-    if parsed.import_options:
-        return _cmd_import_options(parsed.yes)
     if parsed.new_game_folder:
         return _cmd_new_prefix(parsed.new_game_folder, parsed.engine,
                                parsed.target, parsed.alias)

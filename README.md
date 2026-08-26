@@ -39,23 +39,20 @@ linux-prefix-hub --redirect "Cyberpunk"  # data -> ~/Games/linux-prefix-hub/Game
   The game's own folder is listed the same way, with its full path, from the
   moment the game has been started once — in the window and in `--status`,
   and `--open` takes you there when nothing else is known yet.
-- **Extra options for a folder of your own**, too — and without any of the
-  machinery below: we start that game ourselves, so the overlay, the frame-rate
-  display and your own `NAME=value` lines are simply the environment it gets.
-  Started by a launcher of the game's own instead? Give the folder its own copy
-  of the Windows version (hardlinks, no disk space) and point that launcher at
-  it — a compatibility build reads its settings file from inside the container,
-  which is the one place such a launch can pick them up.
+- **The same for any other game folder** — Lutris, Heroic, hand-installed, or
+  one this app made: it can be given its own copy of a Windows version
+  (hardlinks, no disk space) carrying that game's options, and the message
+  names the path to point your own launcher at. A compatibility build reads its
+  settings file from inside the container, which is the one place a launch we
+  do not control can pick them up. For a folder this app made there is nothing
+  to point at all: we start that game, so the options are simply its
+  environment.
 - **Extra options per game** (Steam): a performance overlay, a frame-rate
   display, a log file, or any `NAME=value` you like — for that one game and
   nothing else. Steam runs games inside a container that filters the
   environment, so launch options cannot do this; instead the game gets a
   private copy of a compatibility build (made of hardlinks, so it costs no
   disk space) carrying the settings. Turning it off puts everything back.
-- **Or an environment of your own**, belonging to no game at all: give it a
-  name, and it turns up in the compatibility list for you to pick wherever you
-  want it. Profiles from the `proton-instance` script can be taken over in one
-  step; its own folders are left exactly where they are.
 - **A game folder of your own** for a game no launcher knows about: give it a
   name, pick which Windows version sets it up (a compatibility build Steam has,
   or the Wine on your system), and you get
@@ -360,9 +357,6 @@ linux-prefix-hub                 the window (GTK 4 / libadwaita)
   --options-off GAME             turn them off again
   --options-edit GAME            edit your own NAME=value lines in $EDITOR
   --rebuild-options              move them all onto the newest version
-  --new-options NAME             an environment of your own, without a game
-  --list-options                 list your own environments
-  --import-options [--yes]       take over proton-instance's profiles
   --new-game-folder NAME         set up a game folder of your own
       [--engine NAME]            …with this Windows version (see the message)
       [--target PATH]            …in this folder, just this once

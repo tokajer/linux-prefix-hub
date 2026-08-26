@@ -378,6 +378,122 @@ def rename(directory: str | Path, name: str) -> PrefixResult:
                         name=wanted)
 
 
+def foreign(game: dict[str, Any]) -> bool:
+    """A game folder somebody else made, that we can still give a build to.
+
+    Everything below works on a prefix and a name, and neither has to come
+    from us: a Lutris prefix, a hand-rolled `~/.wine-osu`, a folder another
+    launcher keeps -- all of them can be given a compatibility build of their
+    own and be pointed at it. Steam is excluded because it already has that,
+    properly: `adapters/steam.set_compat_tool` points Steam at the copy
+    itself, and a second way of doing the same thing would be a second
+    answer to one question.
+    """
+    return (str(game.get("source")) not in ("steam", "custom")
+            and bool(game.get("prefix_path")))
+
+
+def engine_for(game: dict[str, Any]) -> str:
+    """Which build this game uses, wherever that answer is kept.
+
+    A folder we made carries it in its own marker -- the folder is what gets
+    moved and copied, so the answer travels with it. A folder somebody else
+    made is not ours to write into, so for those it lives in the profile
+    next to everything else the user chose about that game.
+    """
+    from . import gameopts
+    folder = owned(game.get("prefix_path"))
+    if folder is not None:
+        return engine_of(folder)
+    profile = gameopts.read(str(game.get("source")), str(game.get("app_id")))
+    stored = str(profile.get("base") or "")
+    return stored if stored and stored != gameopts.DEFAULT_FAMILY else ""
+
+
+def set_engine_for(game: dict[str, Any], engine: str) -> PrefixResult:
+    """The same choice, for a folder that may not be ours."""
+    from . import gameopts
+    folder = owned(game.get("prefix_path"))
+    if folder is not None:
+        return set_engine(folder, engine)
+    if engine not in [e["id"] for e in engines()]:
+        return PrefixResult(False, _("{name} is not installed here.",
+                                     name=engine))
+    source, app_id = str(game.get("source")), str(game.get("app_id"))
+    profile = gameopts.read(source, app_id)
+    profile["base"] = engine
+    gameopts.write(source, app_id, profile)
+    warning = runtime_warning(engine)
+    message = _("Now using {engine}.", engine=engine_label(engine))
+    if gameopts.find_instance(source, app_id) is not None:
+        again = make_private_for(game)
+        if not again.ok:
+            return again
+    return PrefixResult(True, message + (" " + warning if warning else ""),
+                        engine=engine, warning=warning)
+
+
+def make_private_for(game: dict[str, Any]) -> PrefixResult:
+    """Give any game folder a compatibility build of its own.
+
+    The folder does not have to be one we made. What the copy is for is the
+    same either way: it carries this game's options into a launch we do not
+    control, and somebody has to point that launcher at it -- so the path is
+    in the result.
+    """
+    from . import gameopts
+    folder = owned(game.get("prefix_path"))
+    if folder is not None:
+        return make_private(folder)
+
+    source, app_id = str(game.get("source")), str(game.get("app_id"))
+    profile = gameopts.read(source, app_id)
+    base = str(profile.get("base") or "")
+    chosen = find_engine(base) if base else find_engine(default_engine())
+    if chosen is None or chosen["kind"] != "proton":
+        return PrefixResult(False,
+                            _("No compatibility build is installed that we "
+                              "could use."))
+    profile["base"] = str(chosen["id"])
+    result = gameopts.build(game, profile)
+    if not result.ok:
+        return PrefixResult(False, result.message)
+    profile["built"] = str(result["base"])
+    profile["built_version"] = str(result["version"])
+    gameopts.write(source, app_id, profile)
+    copy = gameopts.find_instance(source, app_id)
+    message = _("{name} now has a version of its own. Point your own "
+                "launcher at {path} to use it there too.",
+                name=game.get("game_name"), path=str(copy))
+    warning = runtime_warning(str(chosen["id"]))
+    return PrefixResult(True, message + (" " + warning if warning else ""),
+                        path=str(copy), name=str(result["name"]),
+                        warning=warning)
+
+
+def drop_private_for(game: dict[str, Any]) -> PrefixResult:
+    """Take that copy away again, wherever the folder came from."""
+    from . import gameopts
+    folder = owned(game.get("prefix_path"))
+    if folder is not None:
+        return drop_private(folder)
+    source, app_id = str(game.get("source")), str(game.get("app_id"))
+    result = gameopts.remove(source, app_id)
+    if not result.ok:
+        return PrefixResult(False, result.message)
+    profile = gameopts.read(source, app_id)
+    profile["built"] = ""
+    profile["built_version"] = ""
+    gameopts.write(source, app_id, profile)
+    return PrefixResult(True, _("It uses the installed version again."))
+
+
+def private_build_for(game: dict[str, Any]) -> Path | None:
+    from . import gameopts
+    return gameopts.find_instance(str(game.get("source")),
+                                  str(game.get("app_id")))
+
+
 def as_game(directory: str | Path) -> dict[str, Any]:
     """This folder in the shape the rest of the app passes games around in.
 

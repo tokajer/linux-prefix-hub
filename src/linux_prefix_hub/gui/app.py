@@ -159,8 +159,6 @@ class GameRow(Adw.ExpanderRow):
             self.add_row(GameFolderRow(self._window, str(own)))
             self.add_row(PlayRow(self._window, own))
             self.add_row(WindowsRow(self._window, own))
-            self.add_row(EngineRow(self._window, own))
-            self.add_row(PrivateBuildRow(self._window, own))
             self.add_row(WatchRow(self._window, own))
             self.add_row(ShortcutRow(self._window, own))
         elif folder:
@@ -172,10 +170,15 @@ class GameRow(Adw.ExpanderRow):
 
         # How the game runs, before where it saves: it is a property of the
         # game itself and does not wait on anything being learned. Steam
-        # games get it because a compatibility build can carry it; a folder
-        # we made gets it because we start that one ourselves.
-        if str(self._game.get("source")) == "steam" or own is not None:
+        # games get it because Steam can be pointed at a build; every other
+        # game folder gets it because it can have a build of its own, and a
+        # folder we made because we start that one ourselves.
+        other = newprefix.foreign(self._game)
+        if str(self._game.get("source")) == "steam" or other:
             self.add_row(OptionsRow(self._window, self._game))
+        if other:
+            self.add_row(EngineRow(self._window, self._game))
+            self.add_row(PrivateBuildRow(self._window, self._game))
 
         found = self._entry()
         locations = found[1].get("storage_locations", []) if found else []
@@ -550,22 +553,24 @@ class PlayRow(Adw.ActionRow):
 
 
 class EngineRow(Adw.ActionRow):
-    """Which Windows version this folder is started with.
+    """Which Windows version this game folder is started with.
 
     Changeable after the fact and with no game installed yet: the build is
     not part of the folder, it is what gets pointed at it, and which one that
-    is is exactly the thing people try one after another.
+    is is exactly the thing people try one after another. For a folder
+    somebody else made the choice only takes effect through a build of its
+    own -- the row below this one.
     """
 
-    def __init__(self, window: MainWindow, directory: Path) -> None:
+    def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
         super().__init__()
         self._window = window
-        self._dir = directory
+        self._game = game
         self.set_title(esc(_("Windows version")))
         self.set_activatable(False)
 
         self._ids = [str(e["id"]) for e in newprefix.engines()]
-        current = newprefix.engine_of(directory)
+        current = newprefix.engine_for(game)
         if current and current not in self._ids:
             # The build it was made with is gone. Shown anyway, because it is
             # what the folder says, and picking it up silently would hide
@@ -603,9 +608,9 @@ class EngineRow(Adw.ActionRow):
         if not 0 <= index < len(self._ids):
             return
         wanted = self._ids[index]
-        if wanted == newprefix.engine_of(self._dir):
+        if wanted == newprefix.engine_for(self._game):
             return
-        result = newprefix.set_engine(self._dir, wanted)
+        result = newprefix.set_engine_for(self._game, wanted)
         self._window.toast(result.message)
         self._say_runtime(wanted)
 
@@ -714,15 +719,15 @@ class PrivateBuildRow(Adw.ActionRow):
     pointed at this copy.
     """
 
-    def __init__(self, window: MainWindow, directory: Path) -> None:
+    def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
         super().__init__()
         self._window = window
-        self._dir = directory
+        self._game = game
         self._syncing = False
         self.set_title(esc(_("Own Windows version for this folder")))
         self.set_activatable(False)
 
-        copy = newprefix.private_build(directory)
+        copy = newprefix.private_build_for(game)
         self.set_subtitle(esc(
             str(copy) if copy is not None
             else _("A copy of the version above, for this game only. Costs "
@@ -745,11 +750,11 @@ class PrivateBuildRow(Adw.ActionRow):
         if self._syncing:
             return False
         self._switch.set_sensitive(False)
-        directory = self._dir
+        game = dict(self._game)
 
         def work() -> Any:
-            return (newprefix.make_private(directory) if wanted
-                    else newprefix.drop_private(directory))
+            return (newprefix.make_private_for(game) if wanted
+                    else newprefix.drop_private_for(game))
 
         def done(result: Any, error: Exception | None) -> None:
             self._switch.set_sensitive(True)
@@ -1442,14 +1447,14 @@ class OptionsDialog:
         # Built in this order because `_store` reads the text box, and the
         # switches above it can be flicked as soon as the page is up.
         self._custom = self._custom_group()
-        if self._source == "custom" or self._own:
+        if self._own:
             page.add(self._name_group())
         page.add(self._switch_group())
         page.add(self._custom)
-        # Which build to copy is a question only the copy has. A folder this
-        # app made has its own Windows version in its own row, and copying
-        # anything for it would be a second answer to the same question.
-        if not self._own:
+        # Which build to copy is a question only Steam's copy has. Every
+        # other game folder picks its version in its own row (`EngineRow`),
+        # and a second control for it would be a second answer.
+        if self._source == "steam":
             page.add(self._version_group())
         page.add(self._apply_group())
         self._dialog.add(page)
@@ -1483,9 +1488,9 @@ class OptionsDialog:
         from ..core import gameopts
         group = Adw.PreferencesGroup(
             title=_("Name"),
-            description=_("The short name is what it is called on disk and "
-                          "in Steam's list, and it stays. This is only what "
-                          "it is called here."))
+            description=_("The short name is what the folder is called on "
+                          "disk, and it stays -- other programs point at it. "
+                          "This is only what it is called here."))
         directory = gameopts.find_instance(self._source, self._app_id)
         self._name = Adw.EntryRow(title=esc(_("Name")))
         self._name.set_text(
@@ -1625,102 +1630,6 @@ class OptionsDialog:
         self._dialog.show()
 
 
-class CustomRow(Adw.ExpanderRow):
-    """One environment the user made, belonging to no game.
-
-    Same expander as a game, minus everything that needs one: no connect
-    switch, no storage locations, no folder -- there is no game to have any
-    of those. What is left is the part that was never about a game in the
-    first place, which is why this exists.
-    """
-
-    def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
-        super().__init__()
-        self._window = window
-        self._game = game
-        self._name = str(game.get("game_name", "?"))
-
-        self.set_title(esc(self._name))
-        from ..core import gameopts
-        directory = gameopts.find_instance(str(game.get("source")),
-                                           str(game.get("app_id")))
-        self.set_subtitle(esc(
-            _("{name} -- pick it in the game you want it for",
-              name=directory.name) if directory is not None
-            else _("yours -- pick it in the game you want it for")))
-
-        forget = Gtk.Button(icon_name="user-trash-symbolic",
-                            valign=Gtk.Align.CENTER)
-        forget.add_css_class("flat")
-        forget.set_tooltip_text(_("Remove this environment"))
-        forget.connect("clicked", self._on_forget)
-        self.add_suffix(forget)
-
-        self._options = OptionsRow(window, game)
-        self.add_row(self._options)
-
-    def _on_forget(self, *_args: Any) -> None:
-        """Ask first: this deletes something the user made and named."""
-        dialog = Adw.AlertDialog(
-            heading=esc(_("Remove {name}?", name=self._name)),
-            body=esc(_("Anything you pointed at it goes back to what Steam "
-                       "would choose on its own.")))
-        dialog.add_response("cancel", _("Cancel"))
-        dialog.add_response("remove", _("Remove"))
-        dialog.set_response_appearance("remove",
-                                       Adw.ResponseAppearance.DESTRUCTIVE)
-        dialog.set_default_response("cancel")
-        dialog.set_close_response("cancel")
-
-        def on_response(_d: Any, response: str) -> None:
-            if response == "remove":
-                self._forget()
-
-        dialog.connect("response", on_response)
-        dialog.present(self._window)
-
-    def _forget(self) -> None:
-        game = dict(self._game)
-
-        def work() -> Any:
-            from ..core import gameopts
-            result = gameopts.turn_off(game)
-            if result.ok:
-                gameopts.forget(str(game["source"]), str(game["app_id"]))
-            return result
-
-        def done(result: Any, error: Exception | None) -> None:
-            if error is not None:
-                self._window.toast(_("Something went wrong: {error}",
-                                     error=str(error)))
-                return
-            self._window.toast(result.message if not result.ok
-                               else _("{name} is gone.", name=self._name))
-            self._window.reload()
-
-        tasks.run(work, done)
-
-
-def ask_for_a_name(window: MainWindow, heading: str, body: str,
-                   on_name: Any) -> None:
-    """One line of text, in a dialog. Used for a new environment."""
-    dialog = Adw.AlertDialog(heading=esc(heading), body=esc(body))
-    entry = Gtk.Entry(margin_top=6, activates_default=True)
-    dialog.set_extra_child(entry)
-    dialog.add_response("cancel", _("Cancel"))
-    dialog.add_response("make", _("Create"))
-    dialog.set_response_appearance("make", Adw.ResponseAppearance.SUGGESTED)
-    dialog.set_default_response("make")
-    dialog.set_close_response("cancel")
-
-    def on_response(_d: Any, response: str) -> None:
-        if response == "make":
-            on_name(entry.get_text().strip())
-
-    dialog.connect("response", on_response)
-    dialog.present(window)
-
-
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -1733,7 +1642,6 @@ class MainWindow(Adw.ApplicationWindow):
         # of walking every library again.
         self._scanned: list[tuple[str, list[dict[str, Any]]]] = []
         self._show_hidden = False
-        self._own: list[dict[str, Any]] = []
 
         self._spinner = Adw.StatusPage(title=_("Looking for your games..."))
         self._spinner.set_child(Adw.Spinner() if hasattr(Adw, "Spinner")
@@ -1914,12 +1822,6 @@ class MainWindow(Adw.ApplicationWindow):
             self._column.remove(group)
         self._groups = []
 
-        # Above the launchers: these belong to no launcher, and a heading
-        # after four hundred games is a heading nobody finds.
-        own = self._custom_group()
-        self._column.append(own)
-        self._groups.append(own)
-
         hidden_keys = set(db.hidden_games())
         shown = 0
         for source, games in self._scanned:
@@ -1945,81 +1847,14 @@ class MainWindow(Adw.ApplicationWindow):
                                         or self._show_hidden)
         found = sum(len(games) for _s, games in self._scanned)
         self._empty_because_hidden(bool(found) and not shown)
-        # An environment of the user's own is a reason to show the list even
-        # when no game is: they made it, it is theirs, and the empty page
-        # would be a lie in front of it.
-        self._stack.set_visible_child_name(
-            "list" if (shown or self._own) else "empty")
+        self._stack.set_visible_child_name("list" if shown else "empty")
 
-    def _custom_group(self) -> Adw.PreferencesGroup:
-        """Environments the user made, plus the way to make one."""
-        from ..core import gameopts
-        self._own = gameopts.custom_environments()
-        group = Adw.PreferencesGroup(
-            title=esc(_("Your own environments")),
-            description=_("Settings that belong to no game. Make one, then "
-                          "pick it in whatever you want to use it for."))
-        add = Gtk.Button(icon_name="list-add-symbolic",
-                         valign=Gtk.Align.CENTER)
-        add.add_css_class("flat")
-        add.set_tooltip_text(_("Make a new one"))
-        add.connect("clicked", self._on_new_custom)
-        group.set_header_suffix(add)
-
-        for game in self._own:
-            group.add(CustomRow(self, game))
-        if not self._own:
-            hint = Adw.ActionRow(
-                title=esc(_("Nothing here yet")),
-                subtitle=esc(_("Use the plus button to make one.")))
-            hint.set_activatable(False)
-            group.add(hint)
-        self._offer_import(group)
-        return group
-
-    def _offer_import(self, group: Adw.PreferencesGroup) -> None:
-        """The shell script's profiles, if any are still only its.
-
-        Shown where they would land rather than in a menu somewhere: the
-        offer only makes sense next to the list it would add to, and it
-        disappears by itself once there is nothing left to take over.
-        """
-        from ..core import gameopts
-        waiting = gameopts.importable()
-        if not waiting:
-            return
-        row = Adw.ActionRow(
-            title=esc(_("{n} setup(s) found from proton-instance",
-                        n=len(waiting))),
-            subtitle=esc(", ".join(str(e["name"]) for e in waiting)))
-        button = Gtk.Button(label=_("Take over"), valign=Gtk.Align.CENTER)
-        button.connect("clicked", self._on_import, waiting)
-        row.add_suffix(button)
-        row.set_activatable(False)
-        group.add(row)
-
-    def _on_import(self, _button: Gtk.Button,
-                   waiting: list[dict[str, str]]) -> None:
-        def work() -> Any:
-            from ..core import gameopts
-            return [gameopts.import_legacy(entry) for entry in waiting]
-
-        def done(results: Any, error: Exception | None) -> None:
-            if error is not None:
-                self.toast(_("Something went wrong: {error}",
-                             error=str(error)))
-                return
-            self.toast(_("{n} taken over. Their own folders were left "
-                         "alone.", n=sum(1 for r in results if r.ok)))
-            self.reload()
-
-        tasks.run(work, done)
-
+    # --- a game folder of your own ---------------------------------------
     def _on_new_folder(self, *_args: Any) -> None:
-        """A game folder of the user's own: a name and a Windows version.
+        """A game folder of the user's own: a name, a short name, a version.
 
-        The version is asked here and never again: it is written into the
-        folder, and everything started in it afterwards uses the same one.
+        The version is asked here and can be changed later in the game's own
+        row; the short name is the folder on disk and does not move again.
         """
         engines = newprefix.engines()
         if not engines:
@@ -2109,33 +1944,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         def work() -> Any:
             return newprefix.create(name, engine, target, alias)
-
-        def done(result: Any, error: Exception | None) -> None:
-            if error is not None:
-                self.toast(_("Something went wrong: {error}",
-                             error=str(error)))
-                return
-            self.toast(result.message)
-            if result.ok:
-                self.reload()
-
-        tasks.run(work, done)
-
-    def _on_new_custom(self, *_args: Any) -> None:
-        ask_for_a_name(
-            self, _("A setting of your own"),
-            _("Give it a name. It shows up in the compatibility list and you "
-              "pick it wherever you want to use it."),
-            self._make_custom)
-
-    def _make_custom(self, name: str) -> None:
-        from ..core import gameopts
-        if not gameopts.slug(name):
-            self.toast(_("That name cannot be used."))
-            return
-
-        def work() -> Any:
-            return gameopts.turn_on(gameopts.as_game(name))
 
         def done(result: Any, error: Exception | None) -> None:
             if error is not None:

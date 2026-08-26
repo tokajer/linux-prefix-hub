@@ -618,49 +618,23 @@ rather than overwrite a directory that does not have it. `build()` also
 refuses while the game is running — the first thing it does is delete the
 copy the running game is executing out of.
 
-### Environments that belong to no game
+### The same copy, for a game Steam does not start
 
-A game is not the only thing that wants its own environment: a hand-installed
-game, a launcher that is not Steam, or just "this one setup I keep coming back
-to". Those get `source == "custom"` and an id that is a slug of the name the
-user typed, which means `db.game_key` gives them `custom:daoc` and every
-function here — `read`, `write`, `build`, `turn_on`, `turn_off`,
-`rebuild_all` — takes them without a second code path. `as_game()` is the
-whole adapter: a dict with a source, an id and a name, which is all any of it
-ever looked at.
+The same copy is how **any other game folder** gets its options. Lutris,
+Heroic and hand-installed games are started by somebody else, so nothing we
+set in an environment reaches them — but a build reads its own settings file
+wherever it is started from, and their launcher can be pointed at the copy.
+`newprefix.make_private_for()` builds it and puts the path in the result,
+because nothing else can point that launcher there. Steam is the exception
+that needs no pointing: `set_compat_tool()` does it.
 
-An environment has **two names**, and they are not the same thing. The
-*alias* is what it is called on disk and in Steam's own list — short, typed
-once, never changed, because that folder name ends up inside somebody else's
-configuration (the Eden launcher's `protonSteamPath` points straight at this
-directory) and moving it takes their setup with it. The *title* is what our
-own window calls it, and `rename()` changes only that: "Dark Age of Camelot"
-in the list, `LinuxPrefixHub-daoc` on disk.
-
-Two differences, both because there is no game behind one:
-
-- **Nothing is pointed at it.** `turn_on` skips `set_compat_tool` entirely and
-  says so; the user picks it themselves, wherever they want it. `turn_off`
-  likewise never touches `config.vdf`.
-- **Its id is never a number**, which is exactly the case `APPID_FALLBACK`
-  exists for — so a custom environment always carries one.
-
-`title` is stored alongside, because the slug cannot be turned back into what
-was typed: "Old Game" and "Old-Game" are one directory but two different
-words.
-
-### Taking over the script this grew out of
-
-`importable()` reads `~/.config/proton-instances/*.env` — the profiles left by
-the shell script this module started as — and offers the ones we do not have.
-`import_legacy()` copies one into our config and **nothing else**: the
-script's own instance directory stays exactly where it is. Two tools writing
-into one directory is how a setup that works gets lost.
-
-The base stored next to those profiles can be an absolute path into some other
-launcher's runner folder. `_legacy_base()` reduces it to a name and keeps it
-only if a build of that name is actually installed — an import carries a
-choice across or falls back to the default family, never a broken one.
+This is what replaced the standalone "environment of your own" the module used
+to offer (and the `proton-instance` import that fed it): a named build with
+settings, floating free of any game. A game folder does everything it did and
+brings the game with it, so the free-floating one was one concept too many.
+Profiles somebody made under it are still keyed `custom:<slug>` in their
+config, which is why `SOURCE_CUSTOM` survives — `core/uninstall.py` walks it
+to take the build they left behind away with the app.
 
 ### The folder name is for people; the marker is the identity
 

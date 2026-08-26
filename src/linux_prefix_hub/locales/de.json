@@ -460,5 +460,10 @@
   "In your application menu": "Im Anwendungsmenü",
   "Starts the game from your desktop, and still picks up what it stores.": "Startet das Spiel von deinem Desktop und erfasst trotzdem, was es ablegt.",
   "Where the game itself is installed, if that is somewhere else.": "Wo das Spiel selbst installiert ist, falls das woanders liegt.",
-  "Needs {runtime}": "Braucht {runtime}"
+  "Needs {runtime}": "Braucht {runtime}",
+  "{name} is named by the launcher it belongs to.": "{name} heißt so, wie der zugehörige Launcher es nennt.",
+  "the installed one": "die installierte",
+  "Steam games use their extra options for this: {cmd}": "Steam-Spiele nutzen dafür ihre Zusatzoptionen: {cmd}",
+  "{name} has no game folder yet. Start it once, then try again.": "{name} hat noch keinen Spielordner. Starte es einmal und versuche es dann erneut.",
+  "The short name is what the folder is called on disk, and it stays -- other programs point at it. This is only what it is called here.": "Der kurze Name ist der Ordnername auf der Platte, und er bleibt -- andere Programme zeigen darauf. Das hier ist nur, wie es hier heißt."
 }

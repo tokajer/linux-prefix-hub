@@ -858,3 +858,92 @@ def test_a_copy_for_two_folders_of_the_same_name_stays_a_directory_name(
     copies = sorted(p.name for p in (root / "compatibilitytools.d").iterdir()
                     if p.name.startswith("LinuxPrefixHub-"))
     assert len(copies) == 2 and all("/" not in c for c in copies)
+
+
+# --- the same, for a folder this app did not make ------------------------
+def _lutris_game(tmp_path, monkeypatch):
+    """A game folder somebody else made, as discovery hands it over."""
+    from linux_prefix_hub.adapters import base
+    prefix = tmp_path / "lutris/skyrim"
+    (prefix / "drive_c/users/steamuser").mkdir(parents=True)
+    write(prefix / "user.reg", "WINE REGISTRY Version 2\n")
+    write(prefix / "system.reg", "WINE REGISTRY Version 2\n")
+    assert base.is_prefix(prefix)
+    return {"source": "lutris", "app_id": "skyrim", "game_name": "Skyrim",
+            "prefix_path": str(prefix)}
+
+
+def test_any_game_folder_can_get_a_version_of_its_own(tmp_path,
+                                                      monkeypatch):
+    """The point of dropping "your own environments": this covers it.
+
+    A named build carrying settings, for a game some other launcher starts
+    -- that was the whole use of a standalone environment, and here it comes
+    with the game's own folder attached instead of floating free.
+    """
+    from linux_prefix_hub.core import gameopts, newprefix
+    _with_a_build(tmp_path, monkeypatch)          # a build to copy
+    game = _lutris_game(tmp_path, monkeypatch)
+    assert newprefix.foreign(game)
+
+    gameopts.write(game["source"], game["app_id"], {"switches": ["overlay"]})
+    result = gameopts.turn_on(game)
+    assert result.ok, result.message
+
+    copy = newprefix.private_build_for(game)
+    assert copy is not None and copy.name == "LinuxPrefixHub-Skyrim"
+    settings = (copy / gameopts.SETTINGS).read_text(encoding="utf-8")
+    assert '"MANGOHUD": "1"' in settings
+    # Where to point the launcher is in the message, because nothing else
+    # can point it there for them.
+    assert str(copy) in result.message
+
+
+def test_the_version_of_a_foreign_folder_lives_in_the_profile(tmp_path,
+                                                              monkeypatch):
+    """Their folder is not ours to write a marker into."""
+    from linux_prefix_hub.core import newprefix
+    _with_a_build(tmp_path, monkeypatch, "Camelot")
+    game = _lutris_game(tmp_path, monkeypatch)
+
+    assert newprefix.set_engine_for(game, "GE-Proton10-34").ok
+    assert newprefix.engine_for(game) == "GE-Proton10-34"
+    assert not (Path(game["prefix_path"]).parent
+                / newprefix.MARKER).exists()
+    assert not newprefix.set_engine_for(game, "GE-Proton42-1").ok
+
+
+def test_a_steam_game_keeps_the_one_way_it_already_has(tmp_path,
+                                                       monkeypatch):
+    """Steam can be pointed at the copy itself, so it is not offered twice."""
+    from linux_prefix_hub.core import newprefix
+    assert not newprefix.foreign({"source": "steam", "app_id": "1091500",
+                                  "prefix_path": str(tmp_path / "pfx")})
+    # And a game nobody has started has no folder to give a build to.
+    assert not newprefix.foreign({"source": "lutris", "app_id": "x",
+                                  "prefix_path": None})
+
+
+def test_a_hand_made_folder_is_left_untouched_apart_from_the_copy(
+        tmp_path, monkeypatch):
+    """`~/.wine-osu` and friends: the copy is ours, the folder is theirs."""
+    from linux_prefix_hub.adapters import generic
+    from linux_prefix_hub.core import gameopts, newprefix
+    _with_a_build(tmp_path, monkeypatch)
+    prefix = tmp_path / "wine-osu"
+    (prefix / "drive_c/users/tokajer").mkdir(parents=True)
+    write(prefix / "user.reg", "WINE REGISTRY Version 2\n")
+    write(prefix / "system.reg", "WINE REGISTRY Version 2\n")
+    game = generic.game_for(prefix)
+
+    assert newprefix.foreign(game)
+    assert gameopts.turn_on(game).ok
+    assert newprefix.private_build_for(game) is not None
+    assert not (prefix / newprefix.MARKER).exists()
+    assert sorted(p.name for p in prefix.iterdir()) == \
+        ["drive_c", "system.reg", "user.reg"]
+
+    # And off again leaves the copy, because that is the version, not the
+    # options.
+    assert gameopts.turn_off(game).ok
+    assert newprefix.private_build_for(game) is not None

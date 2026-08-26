@@ -24,7 +24,10 @@ and Steam is pointed at it (`adapters/steam.set_compat_tool`).
 Two halves live here. The first is the profile -- what the user chose -- and
 knows nothing about any of the above; when Lutris and Heroic get this, they
 will set the same variables their own way and read the same profile. The
-second is the private build, which is Steam's mechanism and only Steam's.
+second is the private build, which is Steam's mechanism -- and the same copy
+is what carries a profile into any *other* launcher too, because a build
+reads its settings file wherever it is started from
+(`core/newprefix.make_private_for`).
 
 Nothing in this module runs while a game launches (CLAUDE.md #3). A build is
 made when the user turns the switch on and at no other time.
@@ -37,7 +40,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import db, paths, registry
+from . import db, registry
 from .i18n import _
 
 
@@ -87,15 +90,12 @@ DEFAULT_FAMILY = "GE-Proton"
 
 CONFIG_KEY = "game_options"
 
-# An environment the user made themselves belongs to no launcher and no game,
-# so it gets a source of its own and slots into everything keyed by
-# `db.game_key` without a second store: `custom:daoc` sits next to
-# `steam:1091500` and is read, written, listed and removed by the same code.
+# What a profile of the removed "environment of your own" was keyed by. The
+# feature is gone -- a game folder does everything it did and brings the game
+# with it (`core/newprefix.py`) -- but a profile somebody made under it is
+# still in their config, and `core/uninstall.py` still has to take the build
+# it left in `compatibilitytools.d` away with the app.
 SOURCE_CUSTOM = "custom"
-
-# Where the standalone script this grew out of keeps its profiles. Read only,
-# and only when the user asks for an import -- see `importable`.
-LEGACY_PROFILE_DIR = "proton-instances"
 
 
 def switch_label(switch: str) -> str:
@@ -189,57 +189,6 @@ def slug(name: str) -> str:
     while "--" in cleaned:
         cleaned = cleaned.replace("--", "-")
     return cleaned
-
-
-# An environment has two names, and they are not the same thing.
-#
-#   the **alias** is what it is called on disk and in Steam's own list --
-#   short, typed once, and never changed again, because a folder name that
-#   moves takes a launcher's configuration with it (`protonSteamPath` in
-#   somebody else's config points at this exact directory);
-#   the **title** is what *we* call it in our own window, and it can say
-#   "Dark Age of Camelot" while the alias stays "daoc".
-#
-# The alias is the id, so it is what `db.game_key` is built from.
-def as_game(alias: str, title: str = "") -> dict[str, Any]:
-    """A custom environment in the shape everything else here already takes.
-
-    Deliberately not a second code path: `build`, `turn_on`, `turn_off` and
-    the window's row all work on a dict with a source, an id and a name, and
-    a standalone environment is exactly that with no launcher behind it.
-    """
-    key = slug(alias)
-    return {"source": SOURCE_CUSTOM, "app_id": key,
-            "game_name": str(title or alias), "alias": key,
-            "prefix_path": None}
-
-
-def custom_environments() -> list[dict[str, Any]]:
-    """Every environment the user made, by the name they read."""
-    found: list[dict[str, Any]] = []
-    for key, profile in profiles().items():
-        source, _sep, alias = str(key).partition(":")
-        if source == SOURCE_CUSTOM and alias:
-            found.append(as_game(alias, str((profile or {}).get("title") or
-                                            alias)))
-    return sorted(found, key=lambda g: str(g["game_name"]).lower())
-
-
-def rename(source: str, app_id: str, title: str) -> OptionsResult:
-    """Change what we call it. The alias and the folder do not move.
-
-    On purpose: the folder name is in somebody else's configuration by now
-    -- the launcher this environment was made for points straight at it --
-    and renaming it out from under them is how a working setup stops working.
-    """
-    wanted = str(title).strip()
-    if not wanted:
-        return OptionsResult(False, _("That name cannot be used."))
-    profile = read(source, app_id)
-    profile["title"] = wanted
-    write(source, app_id, profile)
-    return OptionsResult(True, _("Now called {name}.", name=wanted),
-                         title=wanted)
 
 
 def parse_custom(text: str) -> dict[str, str]:
@@ -745,32 +694,37 @@ def turn_on(game: dict[str, Any],
     """
     from ..adapters import steam
     source, app_id = str(game.get("source")), str(game.get("app_id"))
-    if own_folder(game):
+    from . import newprefix
+    ours, other = own_folder(game), newprefix.foreign(game)
+    if ours or other:
         profile = dict(profile or read(source, app_id))
         profile["enabled"] = True
         write(source, app_id, profile)
-        # A folder with a build of its own carries them into a launch that
-        # is not ours as well (`newprefix.make_private`), and that file is
-        # the only place such a launch can read them from.
+        # A build of its own carries them into a launch that is not ours,
+        # and that settings file is the only place such a launch can read
+        # them from.
         instance = find_instance(source, app_id)
         if instance is not None:
             write_user_settings(instance, env_for(profile, app_id))
             return OptionsResult(True,
                                  _("Extra options are on, in this game's own "
                                    "version too."))
-        return OptionsResult(True,
-                             _("Extra options are on. They apply the next "
-                               "time you start {game} from here.",
-                               game=game.get("game_name")))
-    if source not in ("steam", SOURCE_CUSTOM):
+        if ours:
+            # We start that game, so its environment is ours to set.
+            return OptionsResult(True,
+                                 _("Extra options are on. They apply the "
+                                   "next time you start {game} from here.",
+                                   game=game.get("game_name")))
+        # Somebody else starts this one, so the copy is the only way in.
+        made = newprefix.make_private_for(game)
+        return OptionsResult(made.ok, made.message)
+    if source != "steam":
         return OptionsResult(False,
                              _("Extra options only work for Steam games so "
                                "far."))
 
     profile = dict(profile or read(source, app_id))
     profile["enabled"] = True
-    if source == SOURCE_CUSTOM and not profile.get("title"):
-        profile["title"] = str(game.get("game_name") or app_id)
     result = build(game, profile)
     if not result.ok:
         return result
@@ -778,16 +732,6 @@ def turn_on(game: dict[str, Any],
     profile["built"] = str(result["base"])
     profile["built_version"] = str(result["version"])
     write(source, app_id, profile)
-
-    if source == SOURCE_CUSTOM:
-        # Nothing to point at it, on purpose: an environment that belongs to
-        # no game is one the user picks themselves, wherever they want it.
-        return OptionsResult(True,
-                             _("{name} is ready. Choose it under the game's "
-                               "compatibility setting.",
-                               name=str(result["name"])),
-                             name=str(result["name"]),
-                             base=str(result["base"]))
 
     hook = steam.set_compat_tool(app_id, str(result["name"]))
     if hook.ok:
@@ -807,11 +751,12 @@ def turn_off(game: dict[str, Any]) -> OptionsResult:
     """
     from ..adapters import steam
     source, app_id = str(game.get("source")), str(game.get("app_id"))
-    if own_folder(game):
+    from . import newprefix
+    if own_folder(game) or newprefix.foreign(game):
         profile = read(source, app_id)
         profile["enabled"] = False
         write(source, app_id, profile)
-        # The copy stays: it is this folder's version, not its options.
+        # The copy stays: it is this game's version, not its options.
         instance = find_instance(source, app_id)
         if instance is not None:
             write_user_settings(instance, {})
@@ -842,72 +787,6 @@ def turn_off(game: dict[str, Any]) -> OptionsResult:
                                  game=game.get("game_name")))
 
 
-# --- taking over what the standalone script set up -----------------------
-# This module grew out of a shell script that kept its profiles in
-# ~/.config/proton-instances/<name>.env, with the chosen base next to it.
-# Reading those is a one-way import the user asks for: we copy the profile
-# and leave the script's own instance directory exactly where it is. Two
-# tools writing into one directory is how you lose a setup that works.
-def importable() -> list[dict[str, str]]:
-    """Profiles the script left behind that we do not have yet."""
-    folder = paths.XDG_CONFIG_HOME / LEGACY_PROFILE_DIR
-    if not folder.is_dir():
-        return []
-    have = {str(g["app_id"]) for g in custom_environments()}
-    found: list[dict[str, str]] = []
-    try:
-        entries = sorted(folder.glob("*.env"))
-    except OSError:
-        return []
-    for env_file in entries:
-        name = env_file.stem
-        if slug(name) in have:
-            continue
-        try:
-            text = env_file.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        found.append({"name": name, "custom": text,
-                      "base": _legacy_base(folder, name)})
-    return found
-
-
-def _legacy_base(folder: Path, name: str) -> str:
-    """The build that profile followed, as a name we can resolve.
-
-    The script stored whatever was typed, which can be an absolute path into
-    somebody else's runner folder. Only the last part of it can mean anything
-    here, and only if a build of that name is actually installed -- otherwise
-    the import falls back to the default family rather than carrying a broken
-    choice across.
-    """
-    try:
-        stored = (folder / f"{name}.base").read_text(
-            encoding="utf-8", errors="ignore").strip()
-    except OSError:
-        return DEFAULT_FAMILY
-    candidate = stored.rstrip("/").rpartition("/")[2] or stored
-    return candidate if candidate and resolve_base(candidate) \
-        else DEFAULT_FAMILY
-
-
-def import_legacy(entry: dict[str, str]) -> OptionsResult:
-    """Keep one of those profiles as an environment of our own.
-
-    Nothing is built and nothing of the script's is touched -- the profile
-    lands in our config and the user turns it on when they want to.
-    """
-    name = str(entry.get("name") or "")
-    if not slug(name):
-        return OptionsResult(False, _("That name cannot be used."))
-    write(SOURCE_CUSTOM, slug(name),
-          {"enabled": False, "base": str(entry.get("base") or DEFAULT_FAMILY),
-           "switches": [], "custom": str(entry.get("custom") or ""),
-           "built": "", "title": name})
-    return OptionsResult(True, _("{name} was taken over.", name=name),
-                         name=name)
-
-
 def rebuild_all() -> list[OptionsResult]:
     """Put every game that has options onto the newest build it follows.
 
@@ -919,22 +798,14 @@ def rebuild_all() -> list[OptionsResult]:
     enabled = enabled_games()
     results: list[OptionsResult] = []
 
-    # An environment of the user's own needs no library walk -- it *is* its
-    # own entry, so it is rebuilt straight from what is stored.
-    for game in custom_environments():
-        if (SOURCE_CUSTOM, str(game["app_id"])) not in enabled:
-            continue
-        results.append(_rebuild_one(game))
-
-    # Folders this app made, but only the ones that have a copy: a folder
-    # whose options are simply its environment has nothing to rebuild, and
-    # the copy is the thing that ages (`newprefix.make_private`).
+    # Every game folder with a copy of its own, whoever made the folder: the
+    # copy is the thing that ages. A game whose options are simply its
+    # environment has nothing to rebuild.
     from . import newprefix
-    for game in adapters.get_adapter("generic").iter_games():
-        folder = newprefix.owned(game.get("prefix_path"))
-        if folder is None or newprefix.private_build(folder) is None:
+    for game in adapters.iter_games(("lutris", "heroic", "generic")):
+        if newprefix.private_build_for(game) is None:
             continue
-        outcome = newprefix.make_private(folder)
+        outcome = newprefix.make_private_for(game)
         results.append(OptionsResult(outcome.ok, outcome.message))
 
     wanted = dict.fromkeys(app_id for source, app_id in enabled
