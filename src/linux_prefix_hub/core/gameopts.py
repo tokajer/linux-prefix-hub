@@ -451,15 +451,18 @@ def wanted_name(game: dict[str, Any]) -> str:
     # name when its title changes), the game's name otherwise.
     label = str(game.get("alias") or game.get("game_name") or "")
     base = f"{PREFIX}-{slug(label)}".rstrip("-")
+    # Through `slug` both times: a game folder this app made has its own
+    # *path* as its id (`adapters/generic`), and a path is not something a
+    # directory can be called.
     if base == PREFIX:
-        base = f"{PREFIX}-{game.get('app_id')}"
+        base = f"{PREFIX}-{slug(str(game.get('app_id')))}"
     directory = tools_dir()
     if directory is None:
         return base
     key = db.game_key(str(game.get("source")), str(game.get("app_id")))
     taken = directory / base
     if taken.exists() and read_marker(taken).get("key") not in ("", key):
-        return f"{base}-{game.get('app_id')}"
+        return f"{base}-{slug(str(game.get('app_id')))}"
     return base
 
 
@@ -719,8 +722,13 @@ def own_folder(game: dict[str, Any]) -> bool:
     nothing to copy and nothing to point at anything.
     """
     from . import newprefix
-    return (str(game.get("source")) == "generic"
-            and newprefix.owned(game.get("prefix_path")) is not None)
+    if str(game.get("source")) != "generic":
+        return False
+    # The id *is* the prefix path for a hand-installed game, and a caller
+    # that only knows the profile (`uninstall.games_with_options`) has
+    # nothing else to hand us.
+    where = game.get("prefix_path") or game.get("app_id")
+    return newprefix.owned(where) is not None
 
 
 def turn_on(game: dict[str, Any],

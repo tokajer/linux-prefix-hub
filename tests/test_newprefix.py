@@ -839,3 +839,22 @@ def test_rebuilding_covers_a_folders_own_version(tmp_path, monkeypatch):
     again = newprefix.private_build(folder)
     assert again is not None and again.name == copy.name
     assert not (again / "left-over-from-the-old-one").exists()
+
+
+def test_a_copy_for_two_folders_of_the_same_name_stays_a_directory_name(
+        tmp_path, monkeypatch):
+    """A hand-installed game's id is its path, and paths have slashes."""
+    from linux_prefix_hub.core import gameopts, newprefix
+    folder, root = _with_a_build(tmp_path, monkeypatch)
+    assert newprefix.make_private(folder).ok
+
+    # A second folder of the same short name, somewhere else entirely.
+    other = tmp_path / "disk2"
+    second = Path(newprefix.create("Camelot", alias="camelot",
+                                   target=other)["path"])
+    name = gameopts.wanted_name(newprefix.as_game(second))
+    assert "/" not in name
+    assert newprefix.make_private(second).ok
+    copies = sorted(p.name for p in (root / "compatibilitytools.d").iterdir()
+                    if p.name.startswith("LinuxPrefixHub-"))
+    assert len(copies) == 2 and all("/" not in c for c in copies)

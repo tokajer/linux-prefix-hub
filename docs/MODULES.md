@@ -862,6 +862,10 @@ not looking there is how "it never notices anything" happens. It becomes the
 `game_dir` of the launch context, which is the second space `wrapper._after`
 already diffs. The folder we made is refused: it holds the prefix.
 
+`removable_files()` in `core/uninstall.py` takes those entries with the app —
+by our own name prefix, because the folders they start are not ours to delete
+and outlive us.
+
 `make_shortcut()` writes a `.desktop` entry that runs `--play <folder>`. Two
 things at once: starting from the window keeps that window busy for the whole
 session and loses the diff if it is closed, and a game people actually play

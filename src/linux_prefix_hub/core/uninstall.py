@@ -141,6 +141,12 @@ def removable_files() -> list[Path]:
              paths.ICON_FILE, paths.ICON_FILE_APP_ID]
     if not integrate.detect_gearlever():
         files.append(paths.installed_appimage_path(db.install_dir()))
+    # One per game folder the user put in their menu
+    # (`newprefix.make_shortcut`). By our own name prefix, because the
+    # folders they belong to are not ours to delete and may well outlive us.
+    with contextlib.suppress(OSError):
+        files += sorted(integrate.APPLICATIONS_DIR.glob(
+            f"{paths.APP_NAME}-*.desktop"))
     return [f for f in files if f.exists() or f.is_symlink()]
 
 

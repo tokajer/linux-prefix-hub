@@ -315,3 +315,18 @@ def test_pending_moves_are_dropped_too(installed):
     db.add_pending_redirect("steam", "42", "Later")
     assert uninstall.run(keep_settings=True)["pending"] == 1
     assert db.pending_redirects() == {}
+
+
+def test_menu_entries_for_game_folders_go_with_the_app(isolated_home):
+    """We wrote them (`newprefix.make_shortcut`), so we take them back."""
+    from linux_prefix_hub.core import integrate, paths, uninstall
+    entry = (integrate.APPLICATIONS_DIR
+             / f"{paths.APP_NAME}-daoc-eden-1.desktop")
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("[Desktop Entry]\n", encoding="utf-8")
+    foreign = integrate.APPLICATIONS_DIR / "somebody-elses.desktop"
+    foreign.write_text("[Desktop Entry]\n", encoding="utf-8")
+
+    files = uninstall.removable_files()
+    assert entry in files
+    assert foreign not in files
