@@ -594,8 +594,31 @@ free `KEY=value` lines for anyone who knows the names. Stored in
 game can own before it has a folder. `env_for()` folds the two together, and
 the user's own lines come last and therefore win.
 
-When Lutris and Heroic get this, they set the same variables their own way
-and read this same profile. Nothing in this half will have to change.
+**Lutris and Heroic set the same variables their own way**, out of this same
+profile. Both keep an environment per game — `system: env:` in the Lutris
+YAML, `enviromentOptions` in the Heroic JSON — and hand it to the game
+themselves, so there is no container in the way and nothing to copy.
+`launcher_for()` asks the adapter whether it has a `set_env`, by name and
+never by source (the same shape as `redirect.cloud_paths`), and
+`_turn_on_launcher` / `_turn_off_launcher` are the whole of it.
+
+Two things are remembered in the profile rather than read back out of the
+launcher's config, because a variable sitting in a game's settings there
+cannot be told from one the user typed:
+
+* `applied` — the names we last put in. A switch turned off takes exactly
+  those out again. Without it a variable either stays forever or the cleanup
+  deletes lines that were never ours.
+* `restore` — what stood in those lines before we wrote over them. Somebody
+  with `DXVK_HUD` set in Lutris who switches our overlay on gets *their*
+  value back when they switch it off. Only ever what we found there, never
+  what we put there ourselves last time round: otherwise the second apply
+  remembers our own value as the user's and there is no way back to theirs.
+
+Removing a variable from a config that is not there any more counts as done,
+not as failed — the game left the launcher and took our lines with it, and an
+uninstall that stopped there (rule 14) would be stuck forever. A change with
+something to *set* still fails, because that one really did not happen.
 
 **The private build** is Steam's mechanism and only Steam's:
 `list_bases()` / `resolve_base()` pick what to copy, `build()` copies it,
@@ -620,13 +643,16 @@ copy the running game is executing out of.
 
 ### The same copy, for a game Steam does not start
 
-The same copy is how **any other game folder** gets its options. Lutris,
-Heroic and hand-installed games are started by somebody else, so nothing we
-set in an environment reaches them — but a build reads its own settings file
-wherever it is started from, and their launcher can be pointed at the copy.
-`newprefix.make_private_for()` builds it and puts the path in the result,
-because nothing else can point that launcher there. Steam is the exception
-that needs no pointing: `set_compat_tool()` does it.
+The same copy is how a **hand-installed** game folder gets its options. Those
+are started by a command the user wrote, so nothing we set in an environment
+reaches them and there is no config to write into — but a build reads its own
+settings file wherever it is started from, and that command can be pointed at
+the copy. `newprefix.make_private_for()` builds it and puts the path in the
+result, because nothing else can point anything there. Steam needs no
+pointing by hand (`set_compat_tool()`), and Lutris and Heroic need no copy at
+all — for those the build is a separate offer ("a Windows version of its own
+for this folder"), kept in step with the same profile where the user asked
+for one.
 
 This is what replaced the standalone "environment of your own" the module used
 to offer (and the `proton-instance` import that fed it): a named build with
@@ -1048,6 +1074,16 @@ adapter. Anything that *does* have a prefix is always kept.
 `connect`/`disconnect` edit `prelaunch_command`, `postexit_command` and
 `prelaunch_wait` inside the `system:` block, line by line, with a `.bak`.
 
+`set_env` is the same edit one level down, in `system: env:` — the block
+Lutris hands to the game, and therefore where the extra options go
+(`core/gameopts.py`). `None` as a value removes a key, the answer names what
+each written line held before, and only the keys named are touched: the rest
+of that block belongs to whoever wrote it. Values are always quoted here,
+unlike the hook keys, because an environment variable is text and
+`WINEDEBUG: false` read back as a boolean is a variable the game never sees.
+An `env:` left with nothing under it goes too — Lutris reads a key with no
+contents as null, which is not the same as no key.
+
 **VERIFY-ON-DEVICE:** `prelaunch_wait` has moved between Lutris releases;
 without it the "before" snapshot can race the game start.
 
@@ -1059,6 +1095,12 @@ Discovery from `GamesConfig/<appName>.json` (prefix) plus a shape-tolerant walk
 through the store caches for the human-readable titles. `connect` adds our
 wrapper to `wrapperOptions`, which makes Heroic use the same wrap shape as
 Steam.
+
+`set_env` writes the extra options into `enviromentOptions`, the list of
+`{key, value}` Heroic hands to the game. The misspelling is theirs and it is
+the key in the file, so it stays exactly as written. Entries with any other
+key keep their place and their order; `None` as a value removes ours, and the
+answer names what each replaced entry held.
 
 **VERIFY-ON-DEVICE:** the `wrapperOptions` key for your Heroic version; Heroic
 should be closed while we write.

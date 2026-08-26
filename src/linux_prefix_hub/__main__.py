@@ -418,7 +418,10 @@ def _cmd_options(needle: str, source: str | None,
     own = gameopts.parse_custom(profile["custom"])
     for key, value in own.items():
         print(f"    {key}={value}")
-    if gameopts.APPID_VAR in gameopts.env_for(profile, app_id) \
+    # Only where a compatibility build reads that id back out of a folder
+    # path. A launcher that hands the game its own environment never does.
+    if gameopts.launcher_for(src) is None \
+            and gameopts.APPID_VAR in gameopts.env_for(profile, app_id) \
             and gameopts.APPID_VAR not in own:
         print(f"    {gameopts.APPID_VAR}={gameopts.APPID_FALLBACK}  "
               + _("(this game needs one)"))

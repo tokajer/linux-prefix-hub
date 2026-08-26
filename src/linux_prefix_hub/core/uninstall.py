@@ -18,11 +18,14 @@ inside *other* people's configuration and outlive us:
      shim while the option still points at it and the game does not start.
      That is not data loss, but it is the user's library broken by our
      cleanup, so it is treated exactly as seriously.
-  3. **Extra options.** A game with extra options is pointed at a private
-     compatibility build we made for it (`core/gameopts.py`). Delete that
-     build and leave the pointer and Steam quietly starts the game with a
-     different one. So the pointer goes first and the build second, and both
-     before anything is deleted.
+  3. **Extra options.** A Steam game with extra options is pointed at a
+     private compatibility build we made for it (`core/gameopts.py`). Delete
+     that build and leave the pointer and Steam quietly starts the game with
+     a different one. So the pointer goes first and the build second, and
+     both before anything is deleted. For a Lutris or Heroic game the same
+     options are variables in their own game settings, and those come back
+     out the same way -- `gameopts.turn_off` does whichever of the two
+     applies.
 
 Hence the order in `run()`, and hence the rule that gives this module its
 shape: **a step that fails stops the uninstall where it is.** Each stage

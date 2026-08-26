@@ -22,12 +22,21 @@ game a build of its own: a private copy of an installed one, with its own
 and Steam is pointed at it (`adapters/steam.set_compat_tool`).
 
 Two halves live here. The first is the profile -- what the user chose -- and
-knows nothing about any of the above; when Lutris and Heroic get this, they
-will set the same variables their own way and read the same profile. The
-second is the private build, which is Steam's mechanism -- and the same copy
-is what carries a profile into any *other* launcher too, because a build
-reads its settings file wherever it is started from
+knows nothing about any of the above. Lutris and Heroic keep an environment
+per game themselves and start the game with it, so for those the profile is
+simply written where they look (`launcher_for`, `adapters/lutris.set_env`,
+`adapters/heroic.set_env`): no container in the way, no copy, nothing for
+the user to point anywhere. The second half is the private build, which is
+Steam's mechanism -- and the same copy still carries a profile into any
+other launcher that has been pointed at it by hand, because a build reads
+its settings file wherever it is started from
 (`core/newprefix.make_private_for`).
+
+What we wrote into somebody else's config is remembered in the profile
+(`applied`, `restore`), never read back out of theirs: a variable sitting in
+a launcher's game settings cannot be told from one the user typed there, so
+a switch turned off would either leave its variable behind forever or delete
+a line that was never ours.
 
 Nothing in this module runs while a game launches (CLAUDE.md #3). A build is
 made when the user turns the switch on and at no other time.
@@ -134,6 +143,8 @@ def read(source: str, app_id: str) -> dict[str, Any]:
     profile.setdefault("built", "")
     profile.setdefault("built_version", "")
     profile.setdefault("title", "")
+    profile.setdefault("applied", [])
+    profile.setdefault("restore", {})
     return profile
 
 
@@ -154,6 +165,17 @@ def write(source: str, app_id: str, profile: dict[str, Any]) -> None:
         # The slug is the id and cannot be turned back into it ("Old Game"
         # and "Old-Game" are one directory but two different words).
         "title": str(profile.get("title") or ""),
+        # The variable names we last put into the launcher's own config
+        # (`launcher_for`). Their config is not ours to read back a guess
+        # from: a switch the user turned off leaves a variable behind that
+        # nothing else can tell from one they typed themselves.
+        "applied": [str(k) for k in profile.get("applied", [])],
+        # And what stood in those lines before we wrote over them. A user
+        # who had `DXVK_HUD` set in Lutris and switched our overlay on gets
+        # their own value back when they switch it off again, instead of a
+        # line they wrote being deleted by ours.
+        "restore": {str(k): str(v)
+                    for k, v in dict(profile.get("restore") or {}).items()},
     }
     db.set_config(CONFIG_KEY, stored)
 
@@ -661,6 +683,23 @@ def remove(source: str, app_id: str) -> OptionsResult:
 
 
 # --- the two whole operations, as the CLI and the window use them --------
+def launcher_for(source: str) -> Any | None:
+    """The launcher that can carry a profile in its own config, if any.
+
+    The adapter answers and the core asks (the same shape as
+    `redirect.cloud_paths`): a launcher with a place for a game's environment
+    says so by having `set_env`, and nothing here has to know which ones
+    those are. Steam is the one that cannot -- its container decides what
+    reaches the game, which is the whole reason for the private build above.
+    """
+    from ..adapters import base as adapters
+    try:
+        adapter = adapters.get_adapter(source)
+    except ValueError:
+        return None
+    return adapter if hasattr(adapter, "set_env") else None
+
+
 def own_folder(game: dict[str, Any]) -> bool:
     """Is this a game folder this app made itself?
 
@@ -680,6 +719,87 @@ def own_folder(game: dict[str, Any]) -> bool:
     return newprefix.owned(where) is not None
 
 
+def _turn_on_launcher(game: dict[str, Any],
+                      profile: dict[str, Any] | None,
+                      launcher: Any) -> OptionsResult:
+    """Lutris and Heroic: the profile goes into their own configuration.
+
+    They start the game themselves and hand it the environment, so there is
+    nothing to copy, nothing to point at anything and no container in the
+    way. What we put there last time is remembered in the profile rather
+    than read back out: a variable sitting in somebody's launcher config
+    cannot be told from one they typed there themselves, and a switch turned
+    off has to take its own variable with it.
+    """
+    from ..adapters import base as adapters
+    source, app_id = str(game.get("source")), str(game.get("app_id"))
+    profile = dict(profile or read(source, app_id))
+    # No app id: the fallback it adds is for a build reading one back out of
+    # a folder path, and nothing on this path does that.
+    env = env_for(profile)
+    applied = [str(key) for key in profile.get("applied", [])]
+    restore = {str(k): str(v)
+               for k, v in dict(profile.get("restore") or {}).items()}
+
+    updates: dict[str, str | None] = dict(env)
+    for key in applied:
+        # A variable this profile no longer asks for: back to what the user
+        # had there, or gone if that line was ours to begin with.
+        updates.setdefault(key, restore.get(key))
+
+    hook = launcher.set_env(app_id, updates)
+    if not hook.ok:
+        return OptionsResult(False, hook.message, manual=hook.manual,
+                             detail=dict(hook["detail"]))
+    profile["enabled"] = True
+    profile["applied"] = sorted(env)
+    # Only what we found there, never what we put there ourselves the last
+    # time round -- otherwise the second apply remembers our own value as
+    # the user's and there is no way back to theirs.
+    kept = {key: value for key, value in restore.items() if key in env}
+    for key, value in dict(hook["detail"].get("replaced") or {}).items():
+        if key not in applied:
+            kept[key] = value
+    profile["restore"] = kept
+    write(source, app_id, profile)
+    # A build of this game's own, where the user asked for one: it carries
+    # the same profile into a launch through the container, and leaving it
+    # on the previous one would answer one question in two ways.
+    instance = find_instance(source, app_id)
+    if instance is not None:
+        write_user_settings(instance, env_for(profile, app_id))
+    return OptionsResult(True,
+                         _("Extra options are on. They apply the next time "
+                           "you start {game} from {launcher}.",
+                           game=game.get("game_name"),
+                           launcher=adapters.source_label(source)))
+
+
+def _turn_off_launcher(game: dict[str, Any],
+                       launcher: Any) -> OptionsResult:
+    """The reverse: only the variables we put there, and nothing else."""
+    source, app_id = str(game.get("source")), str(game.get("app_id"))
+    profile = read(source, app_id)
+    applied = [str(key) for key in profile.get("applied", [])]
+    restore = {str(k): str(v)
+               for k, v in dict(profile.get("restore") or {}).items()}
+    if applied:
+        hook = launcher.set_env(
+            app_id, {key: restore.get(key) for key in applied})
+        if not hook.ok:
+            return OptionsResult(False, hook.message, manual=hook.manual,
+                                 detail=dict(hook["detail"]))
+    profile["enabled"] = False
+    profile["applied"] = []
+    profile["restore"] = {}
+    write(source, app_id, profile)
+    instance = find_instance(source, app_id)
+    if instance is not None:
+        write_user_settings(instance, {})
+    return OptionsResult(True, _("{game} runs normally again.",
+                                 game=game.get("game_name")))
+
+
 def turn_on(game: dict[str, Any],
             profile: dict[str, Any] | None = None) -> OptionsResult:
     """Build it, then point Steam at it. Both, or neither is much use.
@@ -695,6 +815,9 @@ def turn_on(game: dict[str, Any],
     from ..adapters import steam
     source, app_id = str(game.get("source")), str(game.get("app_id"))
     from . import newprefix
+    launcher = launcher_for(source)
+    if launcher is not None:
+        return _turn_on_launcher(game, profile, launcher)
     ours, other = own_folder(game), newprefix.foreign(game)
     if ours or other:
         profile = dict(profile or read(source, app_id))
@@ -752,6 +875,9 @@ def turn_off(game: dict[str, Any]) -> OptionsResult:
     from ..adapters import steam
     source, app_id = str(game.get("source")), str(game.get("app_id"))
     from . import newprefix
+    launcher = launcher_for(source)
+    if launcher is not None:
+        return _turn_off_launcher(game, launcher)
     if own_folder(game) or newprefix.foreign(game):
         profile = read(source, app_id)
         profile["enabled"] = False

@@ -887,7 +887,7 @@ def test_any_game_folder_can_get_a_version_of_its_own(tmp_path,
     assert newprefix.foreign(game)
 
     gameopts.write(game["source"], game["app_id"], {"switches": ["overlay"]})
-    result = gameopts.turn_on(game)
+    result = newprefix.make_private_for(game)
     assert result.ok, result.message
 
     copy = newprefix.private_build_for(game)

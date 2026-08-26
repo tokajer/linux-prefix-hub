@@ -46,6 +46,11 @@ HEROIC_ROOTS = [
 WRAPPER_KEY = "wrapperOptions"
 PREFIX_KEYS = ("winePrefix", "prefixInstallPath", "wine_prefix")
 
+# Heroic's own list of environment variables for one game, a list of
+# `{"key": ..., "value": ...}`. The spelling is theirs and it is the key in
+# the file, so it stays exactly as written.
+ENV_KEY = "enviromentOptions"
+
 
 def _expand(p: str) -> Path:
     return Path(os.path.expanduser(p))
@@ -285,3 +290,47 @@ def disconnect(app_id: str) -> HookResult:
     if not _write_game_config(path, app_id, drop_wrapper):
         return HookResult(False, _("Could not write the Heroic config."))
     return HookResult(True, _("Disconnected."), config=str(path))
+
+
+# --- Extra options -------------------------------------------------------
+def set_env(app_id: str, env: dict[str, str | None]) -> HookResult:
+    """Put variables into the game's own `enviromentOptions`.
+
+    Heroic's answer to what `core/gameopts.py` calls a profile: it starts the
+    game and hands it this environment, so nothing has to be copied and the
+    user has nothing to point anywhere.
+
+    `None` as a value removes the key. Entries with any other key stay where
+    they are, in the order the user has them.
+    """
+    from ..core.i18n import _
+
+    path = config_file_for(app_id)
+    if not path:
+        if env and all(value is None for value in env.values()):
+            # Nothing to take out of a config that is gone; see the same
+            # case in `adapters/lutris.set_env`.
+            return HookResult(True, _("Nothing to change."))
+        return HookResult(False, _("No Heroic config found for '{id}'. Open "
+                                   "the game's settings in Heroic once, then "
+                                   "try again.", id=app_id))
+
+    replaced: dict[str, str] = {}
+
+    def apply(cfg: dict[str, Any]) -> None:
+        entries = []
+        for entry in cfg.get(ENV_KEY) or []:
+            key = str(entry.get("key")) if isinstance(entry, dict) else ""
+            if key in env:
+                # What was there before we wrote over it, so that turning
+                # the options off can put it back.
+                replaced[key] = str(entry.get("value", ""))
+                continue
+            entries.append(entry)
+        entries += [{"key": key, "value": value}
+                    for key, value in env.items() if value is not None]
+        cfg[ENV_KEY] = entries
+
+    if not _write_game_config(path, app_id, apply):
+        return HookResult(False, _("Could not write the Heroic config."))
+    return HookResult(True, _("Saved."), config=str(path), replaced=replaced)

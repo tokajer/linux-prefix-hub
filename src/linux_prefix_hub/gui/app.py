@@ -170,11 +170,16 @@ class GameRow(Adw.ExpanderRow):
 
         # How the game runs, before where it saves: it is a property of the
         # game itself and does not wait on anything being learned. Steam
-        # games get it because Steam can be pointed at a build; every other
-        # game folder gets it because it can have a build of its own, and a
-        # folder we made because we start that one ourselves.
+        # games get it because Steam can be pointed at a build; Lutris and
+        # Heroic because they keep an environment per game themselves, which
+        # takes no folder at all and is why that question is asked before
+        # `other`; every other game folder because it can have a build of
+        # its own, and a folder we made because we start that one ourselves.
+        from ..core import gameopts
+        source = str(self._game.get("source"))
         other = newprefix.foreign(self._game)
-        if str(self._game.get("source")) == "steam" or other:
+        if (gameopts.launcher_for(source) is not None
+                or source == "steam" or other):
             self.add_row(OptionsRow(self._window, self._game))
         if other:
             self.add_row(EngineRow(self._window, self._game))
@@ -1321,7 +1326,8 @@ class OptionsRow(Adw.ActionRow):
     starts it inside a container that filters the environment. A folder this
     app made needs none of that: we start that game ourselves, so the
     profile is simply the environment we start it with. Lutris and Heroic
-    will set the same variables their own way and read the same profile.
+    set the same variables their own way, out of the same profile
+    (`gameopts.launcher_for`).
     """
 
     def __init__(self, window: MainWindow, game: dict[str, Any]) -> None:
@@ -1569,11 +1575,19 @@ class OptionsDialog:
         return group
 
     def _apply_group(self) -> Adw.PreferencesGroup:
-        group = Adw.PreferencesGroup(
-            description=_("They apply the next time you start the game from "
-                          "here.") if self._own
-            else _("Steam has to be closed for this, and picks the "
-                   "change up the next time it starts."))
+        from ..adapters import base as adapters
+        from ..core import gameopts
+        if self._own:
+            note = _("They apply the next time you start the game from "
+                     "here.")
+        elif gameopts.launcher_for(self._source) is not None:
+            note = _("They apply the next time you start the game from "
+                     "{launcher}.",
+                     launcher=adapters.source_label(self._source))
+        else:
+            note = _("Steam has to be closed for this, and picks the "
+                     "change up the next time it starts.")
+        group = Adw.PreferencesGroup(description=note)
         row = Adw.ActionRow(
             title=esc(_("Use these options for this game")))
         button = Gtk.Button(label=_("Apply"), valign=Gtk.Align.CENTER)

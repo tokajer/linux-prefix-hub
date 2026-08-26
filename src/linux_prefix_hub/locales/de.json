@@ -465,5 +465,7 @@
   "the installed one": "die installierte",
   "Steam games use their extra options for this: {cmd}": "Steam-Spiele nutzen dafür ihre Zusatzoptionen: {cmd}",
   "{name} has no game folder yet. Start it once, then try again.": "{name} hat noch keinen Spielordner. Starte es einmal und versuche es dann erneut.",
-  "The short name is what the folder is called on disk, and it stays -- other programs point at it. This is only what it is called here.": "Der kurze Name ist der Ordnername auf der Platte, und er bleibt -- andere Programme zeigen darauf. Das hier ist nur, wie es hier heißt."
+  "The short name is what the folder is called on disk, and it stays -- other programs point at it. This is only what it is called here.": "Der kurze Name ist der Ordnername auf der Platte, und er bleibt -- andere Programme zeigen darauf. Das hier ist nur, wie es hier heißt.",
+  "Extra options are on. They apply the next time you start {game} from {launcher}.": "Zusatzoptionen sind an. Sie gelten, sobald du {game} das nächste Mal über {launcher} startest.",
+  "They apply the next time you start the game from {launcher}.": "Sie gelten, sobald du das Spiel das nächste Mal über {launcher} startest."
 }

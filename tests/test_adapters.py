@@ -296,6 +296,54 @@ def test_lutris_adds_a_system_block_when_missing(
     assert "system:" in text and "prelaunch_command:" in text
 
 
+def test_lutris_set_env_only_touches_our_own_variables(
+        isolated_home, tmp_path, monkeypatch, fake_prefix):
+    from linux_prefix_hub.core import yamlite
+    lutris = _fake_lutris(isolated_home, tmp_path, monkeypatch, fake_prefix)
+    config = isolated_home / ".config/lutris/games/quake-1690000000.yml"
+
+    assert lutris.set_env("quake", {"MANGOHUD": "1"}).ok
+    text = config.read_text(encoding="utf-8")
+    assert "keep my comments" in text            # not a YAML round-trip
+    env = yamlite.loads(text)["system"]["env"]
+    assert env == {"DXVK_HUD": "fps", "MANGOHUD": "1"}
+
+    # And out again, with the line that was there before us untouched.
+    assert lutris.set_env("quake", {"MANGOHUD": None}).ok
+    text = config.read_text(encoding="utf-8")
+    assert "MANGOHUD" not in text
+    assert yamlite.loads(text)["system"]["env"] == {"DXVK_HUD": "fps"}
+
+
+def test_lutris_set_env_adds_the_block_when_there_is_none(
+        isolated_home, tmp_path, monkeypatch, fake_prefix):
+    from linux_prefix_hub.core import yamlite
+    lutris = _fake_lutris(isolated_home, tmp_path, monkeypatch, fake_prefix)
+    config = isolated_home / ".config/lutris/games/quake-1690000000.yml"
+    write(config, f"game:\n  prefix: {fake_prefix}\nsystem:\n"
+                  "  prelaunch_wait: true\n")
+
+    assert lutris.set_env("quake", {"MANGOHUD": "1"}).ok
+    parsed = yamlite.loads(config.read_text(encoding="utf-8"))
+    assert parsed["system"]["env"] == {"MANGOHUD": "1"}
+    assert parsed["system"]["prelaunch_wait"] is True
+
+    # The last one of ours takes the empty `env:` with it -- Lutris reads a
+    # key with nothing under it as null, which is not the same as no key.
+    assert lutris.set_env("quake", {"MANGOHUD": None}).ok
+    text = config.read_text(encoding="utf-8")
+    assert "env:" not in text
+    assert "prelaunch_wait: true" in text
+
+
+def test_lutris_set_env_survives_a_game_that_left_lutris(
+        isolated_home, tmp_path, monkeypatch, fake_prefix):
+    """Removing what is not there any more is done, not failed."""
+    lutris = _fake_lutris(isolated_home, tmp_path, monkeypatch, fake_prefix)
+    assert lutris.set_env("gone", {"MANGOHUD": None}).ok
+    assert not lutris.set_env("gone", {"MANGOHUD": "1"}).ok
+
+
 def test_lutris_slug_keeps_trailing_numbers():
     from linux_prefix_hub.adapters import lutris
     assert lutris._slug_from_configpath("half-life-2-1690000000") == \
@@ -355,6 +403,39 @@ def test_heroic_connect_adds_the_wrapper(isolated_home, monkeypatch,
     assert heroic.disconnect("9a1b2c").ok
     data = json.loads((root / "GamesConfig/9a1b2c.json").read_text())
     assert data["9a1b2c"]["wrapperOptions"] == []
+
+
+def test_heroic_set_env_only_touches_our_own_variables(isolated_home,
+                                                       monkeypatch,
+                                                       fake_prefix):
+    import json
+
+    heroic, root = _fake_heroic(isolated_home, monkeypatch, fake_prefix)
+    config = root / "GamesConfig/9a1b2c.json"
+    data = json.loads(config.read_text())
+    data["9a1b2c"]["enviromentOptions"] = [{"key": "DXVK_HUD", "value": "fps"}]
+    write(config, json.dumps(data))
+
+    assert heroic.set_env("9a1b2c", {"MANGOHUD": "1"}).ok
+    entries = json.loads(config.read_text())["9a1b2c"]["enviromentOptions"]
+    assert entries == [{"key": "DXVK_HUD", "value": "fps"},
+                       {"key": "MANGOHUD", "value": "1"}]
+
+    # Twice must not stack up, and taking ours out leaves theirs.
+    assert heroic.set_env("9a1b2c", {"MANGOHUD": "1"}).ok
+    assert heroic.set_env("9a1b2c", {"MANGOHUD": None}).ok
+    entries = json.loads(config.read_text())["9a1b2c"]["enviromentOptions"]
+    assert entries == [{"key": "DXVK_HUD", "value": "fps"}]
+    assert json.loads(config.read_text())["9a1b2c"]["winePrefix"] \
+        == str(fake_prefix)
+
+
+def test_heroic_set_env_survives_a_game_that_left_heroic(isolated_home,
+                                                         monkeypatch,
+                                                         fake_prefix):
+    heroic, _root = _fake_heroic(isolated_home, monkeypatch, fake_prefix)
+    assert heroic.set_env("gone", {"MANGOHUD": None}).ok
+    assert not heroic.set_env("gone", {"MANGOHUD": "1"}).ok
 
 
 # --- Generic (game folders no launcher knows about) ----------------------

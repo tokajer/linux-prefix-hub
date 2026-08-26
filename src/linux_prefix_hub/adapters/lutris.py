@@ -56,6 +56,10 @@ PRE_KEY = "prelaunch_command"
 POST_KEY = "postexit_command"
 WAIT_KEY = "prelaunch_wait"
 
+# The one we share: `system: env:` is where Lutris keeps the environment a
+# game runs with, and the user has their own lines in there.
+ENV_KEY = "env"
+
 
 def _expand(p: str) -> Path:
     return Path(os.path.expanduser(p))
@@ -262,12 +266,46 @@ def hook_command(app_id: str, phase: str) -> str:
     return f'{paths.HOOK_SHIM} {phase} --source {SOURCE} --id {app_id}'
 
 
+def _yaml_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def _yaml_value(value: str) -> str:
     """Quote a scalar -- except booleans, which Lutris wants as booleans."""
     if value in ("true", "false"):
         return value
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return _yaml_string(value)
+
+
+def _block_end(lines: list[str], start: int, depth: int = 0) -> int:
+    """Where the block opened at `start` ends: the next line beside it."""
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and len(line) - len(line.lstrip()) <= depth:
+            return i
+    return len(lines)
+
+
+def _indent_of(block: list[str], fallback: str) -> str:
+    for line in block:
+        if line.strip():
+            return line[:len(line) - len(line.lstrip())]
+    return fallback
+
+
+def _save(path: Path, lines: list[str], new_lines: list[str]) -> bool:
+    """Write the file back, with a `.bak`. False if nothing changed."""
+    text = "\n".join(new_lines) + "\n"
+    if text == "\n".join(lines) + "\n":
+        return False
+    try:
+        if path.exists():
+            shutil.copy2(path, path.with_suffix(".yml.bak"))
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        return False
+    return True
 
 
 def _edit_system_block(path: Path, updates: dict[str, str | None]) -> bool:
@@ -291,18 +329,9 @@ def _edit_system_block(path: Path, updates: dict[str, str | None]) -> bool:
                                for k, v in wanted.items()]
         new_lines = lines + block
     else:
-        end = len(lines)
-        for i in range(start + 1, len(lines)):
-            ln = lines[i]
-            if ln.strip() and not ln[:1].isspace():
-                end = i
-                break
+        end = _block_end(lines, start)
         block = lines[start + 1:end]
-        indent = "  "
-        for ln in block:
-            if ln.strip():
-                indent = ln[:len(ln) - len(ln.lstrip())]
-                break
+        indent = _indent_of(block, "  ")
 
         for key, value in updates.items():
             idx = next((i for i, ln in enumerate(block)
@@ -316,16 +345,7 @@ def _edit_system_block(path: Path, updates: dict[str, str | None]) -> bool:
                 block.append(f"{indent}{key}: {_yaml_value(value)}")
         new_lines = lines[:start + 1] + block + lines[end:]
 
-    text = "\n".join(new_lines) + "\n"
-    if text == "\n".join(lines) + "\n":
-        return False
-    try:
-        if path.exists():
-            shutil.copy2(path, path.with_suffix(".yml.bak"))
-        path.write_text(text, encoding="utf-8")
-    except OSError:
-        return False
-    return True
+    return _save(path, lines, new_lines)
 
 
 def connect(app_id: str) -> HookResult:
@@ -354,3 +374,106 @@ def disconnect(app_id: str) -> HookResult:
     _edit_system_block(cfg_path, {PRE_KEY: None, POST_KEY: None,
                                   WAIT_KEY: None})
     return HookResult(True, _("Disconnected."), config=str(cfg_path))
+
+
+# --- Extra options -------------------------------------------------------
+def set_env(app_id: str, env: dict[str, str | None]) -> HookResult:
+    """Put variables into the game's own `system: env:` block.
+
+    This is Lutris' answer to what `core/gameopts.py` calls a profile: Lutris
+    starts the game itself and hands it this environment, so there is nothing
+    to copy and nothing for the user to point anywhere.
+
+    `None` as a value removes the key, which is how a profile that lost a
+    switch takes the variable back out. Only the keys named are touched --
+    the rest of that block belongs to whoever wrote it.
+    """
+    from ..core.i18n import _
+
+    cfg_path = config_file_for(app_id)
+    if not cfg_path:
+        if env and all(value is None for value in env.values()):
+            # Taking variables out of a config that is not there any more is
+            # already done -- the game left Lutris and took our lines with
+            # it. Only a change with something to set has failed here.
+            return HookResult(True, _("Nothing to change."))
+        return HookResult(False, _("No Lutris config found for '{id}'.",
+                                   id=app_id))
+    replaced = _edit_env_block(cfg_path, env)
+    return HookResult(True, _("Saved."), config=str(cfg_path),
+                      replaced=replaced)
+
+
+def _edit_env_block(path: Path,
+                    updates: dict[str, str | None]) -> dict[str, str]:
+    """The same line-by-line edit, one level down: `system:` -> `env:`.
+
+    Returns what was standing in the lines it wrote over, so the caller can
+    put those values back later (`core/gameopts._turn_on_launcher`). A key
+    that was not there before is not in the answer.
+
+    Values are always quoted, unlike `_edit_system_block`: an environment
+    variable is text, and `WINEDEBUG: false` read back as a boolean is a
+    variable the game never sees.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    wanted = {k: v for k, v in updates.items() if v is not None}
+
+    start = next((i for i, ln in enumerate(lines)
+                  if ln.rstrip() == "system:"), None)
+    if start is None:
+        if wanted:
+            _save(path, lines, lines + ["system:", f"  {ENV_KEY}:"]
+                  + [f"    {k}: {_yaml_string(v)}"
+                     for k, v in wanted.items()])
+        return {}
+
+    end = _block_end(lines, start)
+    block = lines[start + 1:end]
+    indent = _indent_of(block, "  ")
+    at = next((i for i, ln in enumerate(block)
+               if ln.strip() == f"{ENV_KEY}:"), None)
+    replaced: dict[str, str] = {}
+
+    if at is None:
+        if not wanted:
+            return {}
+        block += [f"{indent}{ENV_KEY}:"] + [
+            f"{indent * 2}{k}: {_yaml_string(v)}" for k, v in wanted.items()]
+    else:
+        env_end = _block_end(block, at, len(indent))
+        env_block = block[at + 1:env_end]
+        env_indent = _indent_of(env_block, indent * 2)
+        for key, value in updates.items():
+            idx = next((i for i, ln in enumerate(env_block)
+                        if ln.strip().split(":")[0].strip() == key), None)
+            if idx is not None:
+                replaced[key] = _plain_value(env_block[idx])
+            if value is None:
+                if idx is not None:
+                    env_block.pop(idx)
+            elif idx is not None:
+                env_block[idx] = f"{env_indent}{key}: {_yaml_string(value)}"
+            else:
+                env_block.append(f"{env_indent}{key}: {_yaml_string(value)}")
+        # An `env:` with nothing under it is not the same as no `env:` at
+        # all -- Lutris reads it as null -- so the key goes with its last
+        # entry.
+        block = (block[:at + 1] + env_block + block[env_end:] if env_block
+                 else block[:at] + block[env_end:])
+
+    _save(path, lines, lines[:start + 1] + block + lines[end:])
+    return replaced
+
+
+def _plain_value(line: str) -> str:
+    """`  DXVK_HUD: "fps"` -> `fps`. A variable is text, whatever it looks
+    like, so nothing here turns `1` into a number or `false` into a bool.
+    """
+    value = line.partition(":")[2].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value

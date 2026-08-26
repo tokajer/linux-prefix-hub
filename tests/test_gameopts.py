@@ -333,12 +333,70 @@ def test_an_incomplete_build_is_refused_before_it_is_copied(tmp_path,
     assert not (tools / "LinuxPrefixHub-Cyberpunk-2077").exists()
 
 
-def test_only_steam_for_now():
+def test_a_game_no_launcher_knows_has_nowhere_to_put_them():
     from linux_prefix_hub.core import gameopts
     result = gameopts.turn_on({"source": "lutris", "app_id": "x",
                                "game_name": "X"})
     assert result.ok is False
-    assert "Steam" in result.message
+    assert "Lutris" in result.message
+
+
+# --- Lutris and Heroic: their own config, not a build of ours ------------
+def test_lutris_options_go_into_lutris_own_config(isolated_home, tmp_path,
+                                                  monkeypatch, fake_prefix):
+    """No copy, no build, nothing for the user to point anywhere.
+
+    Lutris starts the game and hands it the environment itself, so the
+    profile is written where Lutris looks -- and taken back out of there,
+    with the line that was in it before us put back the way it was.
+    """
+    from linux_prefix_hub.core import gameopts, yamlite
+    from test_adapters import _fake_lutris
+    lutris = _fake_lutris(isolated_home, tmp_path, monkeypatch, fake_prefix)
+    game = next(iter(lutris.iter_games()))
+    config = isolated_home / ".config/lutris/games/quake-1690000000.yml"
+
+    gameopts.write("lutris", "quake", {"switches": ["overlay"],
+                                       "custom": "DXVK_HUD=full"})
+    assert gameopts.turn_on(game).ok
+    env = yamlite.loads(config.read_text(encoding="utf-8"))["system"]["env"]
+    assert env == {"MANGOHUD": "1", "DXVK_HUD": "full"}
+    # Nothing was copied anywhere: that whole mechanism is Steam's.
+    assert gameopts.find_instance("lutris", "quake") is None
+
+    # A switch dropped takes its own variable with it, and only its own.
+    gameopts.write("lutris", "quake",
+                   dict(gameopts.read("lutris", "quake"), switches=[]))
+    assert gameopts.turn_on(game).ok
+    env = yamlite.loads(config.read_text(encoding="utf-8"))["system"]["env"]
+    assert env == {"DXVK_HUD": "full"}
+
+    # The bare shape `uninstall.games_with_options` hands over: no folder,
+    # no config path, only the two things a profile is keyed by.
+    assert gameopts.turn_off({"source": "lutris", "app_id": "quake",
+                              "game_name": "Quake"}).ok
+    env = yamlite.loads(config.read_text(encoding="utf-8"))["system"]["env"]
+    assert env == {"DXVK_HUD": "fps"}         # theirs, as they wrote it
+    assert gameopts.read("lutris", "quake")["enabled"] is False
+
+
+def test_heroic_options_go_into_heroic_own_config(isolated_home, monkeypatch,
+                                                  fake_prefix):
+    import json
+
+    from linux_prefix_hub.core import gameopts
+    from test_adapters import _fake_heroic
+    heroic, root = _fake_heroic(isolated_home, monkeypatch, fake_prefix)
+    game = next(iter(heroic.iter_games()))
+    config = root / "GamesConfig/9a1b2c.json"
+
+    gameopts.write("heroic", "9a1b2c", {"switches": ["fps"]})
+    assert gameopts.turn_on(game).ok
+    entries = json.loads(config.read_text())["9a1b2c"]["enviromentOptions"]
+    assert {e["key"] for e in entries} == set(gameopts.SWITCHES["fps"])
+
+    assert gameopts.turn_off(game).ok
+    assert json.loads(config.read_text())["9a1b2c"]["enviromentOptions"] == []
 
 
 # --- Steam's own settings file -------------------------------------------

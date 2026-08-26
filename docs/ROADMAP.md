@@ -454,6 +454,46 @@ download waits for `app_hook()`'s auto-apply at the next start). `restart_app`
 is gone: coming back is the helper's job, because by then nobody is left here
 to do it.
 
+## ✅ Extra options in Lutris and Heroic
+
+The switches ("show the overlay", "write a log") worked for Steam games and
+for the folders this app makes itself. For a Lutris or Heroic game the answer
+was a private compatibility build plus a sentence asking the user to point
+their launcher at it by hand -- which is a workaround for a problem those two
+do not have.
+
+**They start the game themselves.** Lutris keeps an environment per game in
+`system: env:`, Heroic in `enviromentOptions`, and both hand it straight to
+the game. So the profile goes there: `adapters/lutris.set_env` and
+`adapters/heroic.set_env`, asked for by name and never by source
+(`gameopts.launcher_for`, the same shape as `redirect.cloud_paths`). No copy,
+no container, nothing to point anywhere, and the options work for a game that
+has never run.
+
+The three decisions worth remembering:
+
+- **What we wrote is remembered in our profile, not read back out of theirs.**
+  A variable sitting in a launcher's game settings cannot be told from one the
+  user typed there. So `applied` lists the names we put in, and turning a
+  switch off takes exactly those out again -- anything else either leaves
+  variables behind forever or deletes lines that were never ours.
+- **And what stood there before is remembered too** (`restore`). Somebody with
+  `DXVK_HUD` set in Lutris who turns our overlay on gets *their* value back
+  when they turn it off, instead of a line they wrote being deleted by ours.
+  Only ever what we found there, never what we put there ourselves last time:
+  the second apply would otherwise remember our own value as the user's.
+- **Removing from a config that is gone is done, not failed.** A game the user
+  deleted from Lutris took our lines with it, and an uninstall that stops
+  there would be stuck forever (rule 14 makes a failed step stop everything).
+  A change with something to *set* still fails, because that one really did
+  not happen.
+
+The private build stays what it always was for those games -- "give this game
+folder a Windows version of its own", the `EngineRow`/`PrivateBuildRow` pair
+in the window -- and where one exists it is kept in step with the same
+profile. It is no longer made behind the user's back by a switch that says
+"extra options".
+
 ## 🔭 Backlog
 
 - **More languages**: one JSON file each; the machinery is done.
