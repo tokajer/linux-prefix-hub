@@ -30,6 +30,12 @@ command).
 **Building on it:** the three shim modes are matched *before* argparse and use
 lazy imports, so a game launch never pays for the CLI. Keep it that way.
 
+**Watch out:** `GUI_PROBE` and `_has_gtk` really import the typelibs.
+`require_version` only finds Gtk's own, so a missing dependency such as
+Graphene passes it and crashes the window afterwards. A failed probe ends in
+`_report_missing_gtk`, which also sends a notification: the desktop entry has
+`Terminal=false`, so a print alone reaches nobody.
+
 **Watch out:** `_reexec_gui`'s loop guard is our own **pid**, not a boolean.
 `execve` keeps the pid, so the interpreter we hand the window to still sees
 "already tried" — while a process that merely inherited the variable does not.

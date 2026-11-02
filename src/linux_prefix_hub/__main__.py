@@ -905,6 +905,7 @@ def _has_gtk() -> bool:
         import gi
         gi.require_version("Gtk", "4.0")
         gi.require_version("Adw", "1")
+        from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: F401
         return True
     except (ImportError, ValueError):
         return False
@@ -920,9 +921,23 @@ def _gui_available() -> bool:
     return _has_display() and _has_gtk()
 
 
+# The import is the check. require_version only finds Gtk's own typelib, so a
+# missing dependency (Graphene, on openSUSE a package of its own) passes it and
+# then kills gui/app.py on its first line.
 GUI_PROBE = ("import gi; gi.require_version('Gtk', '4.0'); "
-             "gi.require_version('Adw', '1')")
+             "gi.require_version('Adw', '1'); "
+             "from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango")
 REEXEC_FLAG = "LPH_GUI_REEXEC"
+
+# Matched against /etc/os-release ID + ID_LIKE. openSUSE names its Python
+# package after the Python version, so only the typelibs are named there.
+GTK_INSTALL_COMMANDS = (
+    ("suse", "sudo zypper install typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 "
+             "typelib-1_0-Graphene-1_0"),
+    ("fedora", "sudo dnf install python3-gobject gtk4 libadwaita"),
+    ("debian", "sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1"),
+    ("arch", "sudo pacman -S python-gobject gtk4 libadwaita"),
+)
 
 
 def _handover_env() -> dict[str, str]:
@@ -997,6 +1012,42 @@ def _reexec_gui() -> int:
     return 1                           # unreachable unless execve failed
 
 
+def _gtk_install_command() -> str | None:
+    """The command that installs what the window needs on this system."""
+    import platform
+    try:
+        release = platform.freedesktop_os_release()
+    except OSError:
+        return None
+    ids = f"{release.get('ID', '')} {release.get('ID_LIKE', '')}"
+    for distro, command in GTK_INSTALL_COMMANDS:
+        if distro in ids:
+            return command
+    return None
+
+
+def _report_missing_gtk() -> None:
+    """Say what is missing, where a start from the menu can see it too.
+
+    The desktop entry has Terminal=false, so a print alone reaches nobody:
+    the user clicks the icon and nothing happens.
+    """
+    import contextlib
+    import subprocess
+
+    from .core import desktop, paths
+    message = _("The graphical interface needs GTK 4 and libadwaita with "
+                "their Python bindings. Falling back to the terminal.")
+    command = _gtk_install_command()
+    if command:
+        message += "\n" + _("To install them: {command}", command=command)
+    print(message)
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["notify-send", "-a", paths.APP_TITLE, paths.APP_TITLE,
+                        message], check=False, timeout=5,
+                       env=desktop.child_env())
+
+
 def _cmd_gui() -> int:
     """Start the window. This is what a bare start does.
 
@@ -1016,8 +1067,7 @@ def _cmd_gui() -> int:
 
     if _has_display():
         _reexec_gui()                  # returns only when it did not work
-        print(_("The graphical interface needs GTK 4 and libadwaita "
-                "(package python3-gobject). Falling back to the terminal."))
+        _report_missing_gtk()
     return _cmd_terminal()
 
 

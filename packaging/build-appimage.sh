@@ -151,6 +151,10 @@ chmod +x "${TOOL}"
 # `--update` talks to the GitHub API and works either way).
 UPDATE_INFO="gh-releases-zsync|${GH_OWNER}|${GH_REPO}|latest|${APP}-*-${ARCH}.AppImage.zsync"
 
+# The base image's AppDir is 0700, and appimagetool refuses to pack that: an
+# AppImage is run by users other than the one who built it.
+chmod -R a+rX "${APPDIR}"
+
 say "Packing ${OUT##*/}"
 if command -v zsyncmake >/dev/null 2>&1; then
   ARCH="${ARCH}" VERSION="${VERSION}" "${TOOL}" \

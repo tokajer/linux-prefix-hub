@@ -669,6 +669,54 @@ def test_bare_start_hands_over_when_this_interpreter_lacks_gtk(monkeypatch,
     assert tried == ["reexec"]
 
 
+def _os_release(monkeypatch, m, **release):
+    import platform
+    monkeypatch.setattr(platform, "freedesktop_os_release", lambda: release)
+    return m._gtk_install_command()
+
+
+@pytest.mark.parametrize("release, package", [
+    ({"ID": "opensuse-tumbleweed", "ID_LIKE": "opensuse suse"},
+     "typelib-1_0-Graphene-1_0"),
+    ({"ID": "nobara", "ID_LIKE": "rhel centos fedora"}, "python3-gobject"),
+    ({"ID": "ubuntu", "ID_LIKE": "debian"}, "gir1.2-adw-1"),
+    ({"ID": "cachyos", "ID_LIKE": "arch"}, "python-gobject"),
+])
+def test_install_command_follows_the_distribution(monkeypatch, release,
+                                                  package):
+    from linux_prefix_hub import __main__ as m
+    assert package in _os_release(monkeypatch, m, **release)
+
+
+def test_unknown_distribution_gets_no_command(monkeypatch):
+    from linux_prefix_hub import __main__ as m
+    assert _os_release(monkeypatch, m, ID="slackware") is None
+
+
+def test_gui_probe_imports_instead_of_only_finding_typelibs():
+    """require_version passes with Graphene missing; the import does not."""
+    from linux_prefix_hub import __main__ as m
+    assert "from gi.repository import" in m.GUI_PROBE
+
+
+def test_missing_gtk_reaches_a_start_without_terminal(monkeypatch, capsys):
+    """The desktop entry has Terminal=false, so a print alone is invisible."""
+    import subprocess
+    m = _gui_env(monkeypatch, display=True, gtk_here=False)
+    _set_up(monkeypatch)
+    monkeypatch.setattr(m, "_reexec_gui", lambda: 1)
+    monkeypatch.setattr(m, "_gtk_install_command", lambda: "install-it")
+    sent: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **kw: sent.append(cmd))
+
+    assert _run(monkeypatch) == 0
+
+    assert sent[0][0] == "notify-send"
+    assert "install-it" in sent[0][-1]
+    assert "install-it" in capsys.readouterr().out
+
+
 def test_no_display_falls_back_without_probing(monkeypatch, capsys):
     """On a TTY or over ssh there is nothing to draw on -- and no point
     probing every interpreter on the box for GTK."""
