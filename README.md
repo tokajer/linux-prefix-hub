@@ -429,6 +429,17 @@ Steam libraries, Heroic (Flatpak) and GearLever (Flatpak):
   behaviour, unchanged.
 - ✅ **The list grouped per launcher** — Steam, Lutris, Heroic and a
   hand-made folder each get their own heading, in the window and in `--scan`.
+- ✅ **Writing `localconfig.vdf`** — 12 connected launch options are in the
+  real file, its `.bak` exists, and they survived Steam rewriting the file.
+- ✅ **Moving game data** — on Steam, Lutris and a hand-made game folder, three
+  games in total. The registry change also survived later launches: one game
+  folder's `user.reg`, rewritten by Wine after a launch, still points at the
+  moved folders.
+- ✅ **Applying an update** — 0.4.0 to 0.4.1 through the explicit locator: the
+  helper waited for the app to exit, replaced the AppImage and reported the
+  package as applied.
+- ✅ **A game folder made here, with a compatibility build** — one built with
+  GE-Proton10-34 ran its game: the game's data was detected and moved.
 
 Five bugs that only real use exposed, now fixed and covered by regression
 tests: a duplicate appid listed twice (same manifest in two libraries), Proton
@@ -446,83 +457,74 @@ ourselves earlier — it had inherited our GUI hand-over guard and passed it on
 
 Marked in the code at the relevant spots:
 
-1. **localconfig.vdf writing** — we keep a `.bak`; try it once on a game whose
-   launch options you can afford to lose.
-2. **Lutris `prelaunch_wait`** — makes Lutris wait for our pre-hook; the key
-   has moved between Lutris releases. Discovery itself is verified against
+1. **Lutris `prelaunch_wait`** — makes Lutris wait for our pre-hook; the key
+   has moved between Lutris releases. It is in the real game configs and the
+   hook produces results, but that Lutris really waits is not confirmed.
+   Discovery itself is verified against
    Lutris 0.5.23, which keeps the per-game YAMLs under the *data* root
    (`~/.local/share/lutris/games/`) and may not create `~/.config/lutris` at
    all; both layouts are searched.
-3. **Registry redirection** — after the first redirected launch, confirm in
-   `winecfg` → Desktop Integration that the folder points where you expect.
-4. **Desktop notifications from a systemd user service** — need a reachable
+2. **Desktop notifications from a systemd user service** — need a reachable
    D-Bus (`DBUS_SESSION_BUS_ADDRESS`).
-5. **Hand-made game folders** — `DEFAULT_ROOTS` in `adapters/generic.py` is a
+3. **Hand-made game folders** — `DEFAULT_ROOTS` in `adapters/generic.py` is a
    "where do people keep these" list and cannot be complete. Check it against
    your own setup; anything missing is one `--add-game-folder` away.
-6. **Applying an update through the explicit locator** — `check()` is
-   verified from a system interpreter (it finds 0.2.3 from 0.2.2), but the
-   `download` → hand over → restart path with that locator has never run. It
-   is what replaces the AppImage file, so watch the first one. Two things to
-   watch specifically: that the helper's `--restart` really brings an AppImage
-   back (if it does not, the next start is the new version anyway —
-   `updater.app_hook` applies what is waiting), and that **Later** leaves the
-   app closing normally, with the update installed on the next start.
-7. **The tray on a desktop that is not KDE** — GNOME needs the *AppIndicator*
+4. **After an update** — applying one is verified (see above). Still open:
+   that the helper's `--restart` really brings an AppImage back (if it does
+   not, the next start is the new version anyway — `updater.app_hook` applies
+   what is waiting), and that **Later** leaves the app closing normally, with
+   the update installed on the next start.
+5. **The tray on a desktop that is not KDE** — GNOME needs the *AppIndicator*
    extension, and its host is a different implementation of the same two
    interfaces. Check that the icon appears, that a left click raises the
    window and that a right click opens the menu. The icon itself is resolved
    through the icon theme by name, so it needs `--integrate` to have run —
    otherwise the item registers but draws blank.
-8. **A real first launch** — the `compatdata` watch and a move that was asked
+6. **A real first launch** — the `compatdata` watch and a move that was asked
    for before the game existed have only been exercised against a synthetic
    library. Ask for one on a game you have never started, play it once, and
    check that the data lands in your home folder afterwards (within a minute
    of quitting, not while you are playing).
-9. **The Velopack build** (`packaging/build-velopack.sh`) — the packaging up
+7. **The Velopack build** (`packaging/build-velopack.sh`) — the packaging up
    to `vpk` is verified, `vpk` itself only in CI. `--mainExe` is answered:
    it must be an **ELF binary**, not a shell script (`vpk` reads the machine
    out of it), which is why there is a small compiled shim next to the
    launcher script. Still open: what file names `vpk` emits, for the release
    upload glob, and whether GearLever accepts a vpk-built AppImage.
-10. **The Steam Cloud root tokens** — `CLOUD_ROOTS` in `adapters/steam.py`
+8. **The Steam Cloud root tokens** — `CLOUD_ROOTS` in `adapters/steam.py`
     maps the root names at the head of a `remotecache.vdf` key onto our
     folders. Valve documents the root names, not how they are written into
     that file, so check the spelling against a game of yours that syncs
     (`~/.steam/steam/userdata/<id>/<appid>/remotecache.vdf`). A token we do
     not recognise costs a warning, never a wrong move.
-11. **A real uninstall** — verified end to end against a synthetic library
+9. **A real uninstall** — verified end to end against a synthetic library
     (`tests/test_uninstall.py`, plus a throwaway `HOME`). What only real
     hardware can answer: that every launch option really is gone from Steam
     afterwards, and that a game whose folder was moved back starts and finds
     its saves. Run it with `--keep-settings` the first time and the DB is
     still there if you want the app back.
-12. **Extra options on a real game** — the whole path is verified against a
+10. **Extra options on a real game** — the whole path is verified against a
     synthetic Steam root (`tests/test_gameopts.py`, plus a throwaway `HOME`):
     the hardlink copy, the generated settings file, the rewritten manifest and
-    the `config.vdf` mapping. What only real hardware can answer is whether
-    the game then *starts* with them: turn them on for one game, check that
-    Steam's compatibility list shows it, play it, and confirm the overlay
-    appears. Two things to watch specifically — `config.vdf` is a bigger file
+    the `config.vdf` mapping, and a real game is mapped to its copy in a
+    `config.vdf` Steam has rewritten since. What only real hardware can answer
+    is whether the game then *starts* with them: play it and confirm the
+    overlay appears. Two things to watch specifically — `config.vdf` is a bigger file
     than the launch options one and we round-trip it through our own parser,
     so compare it against the `.bak` afterwards; and a game whose folder has
     no number in it needs an app id named for it (`gameopts.APPID_FALLBACK`),
     which is exactly the case the fallback exists for.
-13. **A game folder started by something else** — the folder name always
+11. **A game folder started by something else** — the folder name always
     carries a digit (`newprefix._numbered`) because a compatibility build's
     `protonfixes` reads the app id out of the path and aborts on a path
     without one. Verified from a launcher's log on one machine (`IndexError:
     list index out of range` in `fix.py`); worth confirming on yours if you
     point another launcher at one of these folders.
-14. **A game folder made from scratch** — the two commands, the environment
-    they get and the marker are verified against a stand-in for the launch
-    (`tests/test_newprefix.py`), so what is open is the launch itself: set one
-    up with a compatibility build *and* one with the Wine on your system,
-    install something into each, and check that the game starts afterwards.
-    Two things to watch specifically — a compatibility build wants a Steam
-    client directory (`STEAM_COMPAT_CLIENT_INSTALL_PATH`) and complains in
-    ways that end up in our error message, and the system's Wine may ask
-    about Mono/Gecko in a window of its own while the app waits for it.
+12. **A game folder made with the Wine on your system** — the compatibility
+    build is verified (see above), this layer only against a stand-in for the
+    launch (`tests/test_newprefix.py`). Set one up, install something into it
+    and check that the game starts. Watch that the system's Wine may ask about
+    Mono/Gecko in a window of its own while the app waits for it.
 
 ## Documentation
 

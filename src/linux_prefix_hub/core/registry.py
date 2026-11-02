@@ -17,9 +17,6 @@ Two hard rules, both learned the painful way:
   2. Some folders only have a GUID name (Downloads, Saved Games, LocalLow),
      never a readable one. Hence SHELL_FOLDERS maps to a *list* of value names
      and we write all of them.
-
-VERIFY-ON-DEVICE: check one redirected folder in-game after the first launch
-(`winecfg` -> Desktop Integration shows the same values).
 """
 from __future__ import annotations
 
